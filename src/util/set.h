@@ -46,9 +46,8 @@ struct set {
    uint32_t (*key_hash_function)(const void *key);
    bool (*key_equals_function)(const void *a, const void *b);
    uint32_t size;
-   uint32_t rehash;
    uint32_t max_entries;
-   uint32_t size_index;
+   uint32_t size_iteration;
    uint32_t entries;
    uint32_t deleted_entries;
 };
