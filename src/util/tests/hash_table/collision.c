@@ -91,5 +91,19 @@ main(int argc, char **argv)
 
    _mesa_hash_table_destroy(ht, NULL);
 
+   /* Try inserting multiple items with the same hash
+    * This exercises a worst case scenario where we might fail to find
+    * an empty slot in the table, even though there is free space
+    */
+   ht = _mesa_hash_table_create(NULL, NULL, _mesa_key_string_equal);
+   for (i = 0; i < 100; i++) {
+      char *key = malloc(10);
+      sprintf(key, "spam%d", i);
+      entry2 = _mesa_hash_table_insert_pre_hashed(ht, bad_hash, key, NULL);
+      assert(entry2 != NULL);
+   }
+
+   _mesa_hash_table_destroy(ht, NULL);
+
    return 0;
 }
