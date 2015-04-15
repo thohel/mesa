@@ -196,12 +196,8 @@ set_rehash(struct set *ht, uint32_t new_size_iteration)
    ht->entries = 0;
    ht->deleted_entries = 0;
 
-   for (entry = old_ht.table;
-        entry != old_ht.table + old_ht.size;
-        entry++) {
-      if (entry_is_present(entry)) {
-         set_add(ht, entry->hash, entry->key);
-      }
+   set_foreach(&old_ht, entry) {
+      set_add(ht, entry->hash, entry->key);
    }
 
    ralloc_free(old_ht.table);
