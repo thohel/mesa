@@ -25,6 +25,23 @@
 
 #include "nir.h"
 #include "nir_loop_worklist.h"
+#include "nir_ssa_def_worklist.h"
+
+typedef enum {
+   unprocessed,
+   undefined,
+   invariant,
+   basic_induction,
+   derived_induction
+} loop_variable_type;
+
+typedef struct {
+   loop_variable_type type;
+
+   nir_ssa_def *ssa_def;
+
+} loop_variable_entry;
+
 typedef struct {
    /*
     * Something should probably go here.
@@ -34,6 +51,7 @@ typedef struct {
    void *mem_ctx;
    nir_function_impl *impl;
    uint32_t num_loops_found;
+   loop_variable_entry *entries;
 
    /*
     * This is based on using a loop worklist
@@ -41,11 +59,214 @@ typedef struct {
     * wrap our own little list around exec_list.
     */
    nir_loop_worklist *loops;
+
+   /*
+    * Worklist of ssa-defs
+    */
+   nir_ssa_def_worklist *ssa_defs;
 } loop_analyze_state;
 
+/*
+ * Gets the loop entry for the given ssa def
+ */
+static loop_variable_entry *
+get_loop_entry(nir_ssa_def *value, loop_analyze_state *state)
+{
+   loop_variable_entry *entry = &state->entries[value->index];
+   return entry;
+}
 
+static bool
+is_alu_invariant(nir_alu_instr *alu, loop_analyze_state *state)
+{
+   loop_variable_entry *entry = get_lattice_entry(alu.dest.dest.ssa, state);
+   loop_variable_entry *src;
+   boolean all_constant = true;
 
+   for (unsigned i = 0; i < nir_op_infos[alu->op].num_inputs; i++) {
+      src = get_lattice_entry(alu->src[i].src.ssa, state);
 
+      /* Check if the instruction is from outside the loop
+       * If it is it is invariant, and so we can mark continue
+       * through and onto the next operand
+       */
+      if ();
+
+      /*
+       * we have two possibilities; optimistic or pessimistic
+       * We can solve it mostly in the way it is solved for SCCP
+       * or we can use a system of recursion
+       */
+
+      /*
+       * Example of how it could work with recursion.
+       * This is however a pessimistic approach, and so may not
+       * detect all of the invariants that exist.
+       */
+      if (!is_loop_invariant(src->ssa_def, state))
+         return false;
+   }
+}
+
+static bool
+is_phi_invariant(nir_phi_instr *phi, loop_analyze_state *state)
+{
+   loop_variable_entry *entry = get_lattice_entry(phi.dest.ssa, state);
+   loop_variable_entry *src_entry;
+   boolean all_constant = true;
+
+   nir_foreach_phi_src(phi, src) {
+      src_entry = get_loop_entry(src->src.ssa, state);
+
+      if (src_entry->type == invariant)
+         continue;
+
+      if (!is_loop_invariant(src_entry->ssa_def, state))
+         return false;
+   }
+}
+
+static bool
+is_reaching_definition_outside_loop(loop_variable_entry *entry, loop_analyze_state *state)
+{
+   loop_variable_entry *src_entry;
+
+   switch (entry->ssa_def->parent_instr->type)
+   case nir_alu_instr: {
+      nir_alu_instr *instr = nir_instr_as_alu(entry.ssa_def.parent_instr);
+
+      for (unsigned i = 0; i < nir_op_infos[instr->op].num_inputs; i++) {
+
+         /* Check if the instruction is from outside the loop
+          * If it is fall through to next operand
+          * If it is not then return false
+          */
+         if ();
+      }
+      return true;
+   }
+   case nir_phi_instr: {
+      nir_phi_instr *instr = nir_instr_as_phi(entry.ssa_def.parent_instr);
+
+      nir_foreach_phi_src(instr, src) {
+         /* Check if the instruction is from outside the loop
+          * If it is fall through to next operand
+          * If it is not then return false
+          */
+         if ();
+      }
+      return true;
+   }
+   default: {
+      return false;
+   }
+}
+
+static bool
+is_loop_invariant(nir_ssa_def *def, loop_analyze_state *state)
+{
+   loop_variable_entry *entry = get_loop_entry(def, state);
+
+   if(entry->type == invariant)
+      return true;
+
+   /*
+    * If the variable is not in a loop it is loop invariant.
+    * Mark it as such.
+    */
+   if (/*entry outside loop*/) {
+      entry->type = invariant;
+      return true;
+   }
+
+   if (entry->type != basic_induction && entry->type != derived_induction) {
+      /*
+       * Process value
+       *
+       * There are three rules to follow:
+       *    Are all the operands from outside the loop?
+       *    Are all the operands loop invariant?
+       *    Or is it a combination of the two?
+       *       Then it is loop invariant
+       *    If one of the operands are induction variables
+       *       Can not be loop invariant
+       *
+       * If it is found to be invariant then add all users to the ssa
+       * worklist so that we can find out if it is now invariant.
+       */
+      entry->ssa_def = def;
+
+      switch (def->parent_instr.type)
+      case nir_instr_type_alu: {
+         nir_alu_instr *alu = nir_instr_as_alu(def.parent_instr);
+         return is_alu_invariant(alu, state);
+      }
+      case nir_instr_type_phi: {
+         nir_phi_instr *phi = nir_instr_as_phi(def.parent_instr);
+         return is_phi_invariant(phi, state);
+      }
+      case nir_instr_type_load_const: {
+         entry->type = invariant; // Is this correct? Shouldn't it be?
+         return true;
+      }
+      default: {
+         entry->type = undefined;
+         /*
+          * XXX: we need to handle other users than alu's probably.
+          * We can, for now, set that use as overdefined and bail.
+          * Uniform loads may be of interest?
+          */
+         return false;
+      }
+   }
+
+   /*
+    * It is one of the other cases
+    */
+   return false;
+}
+
+/*
+ * Coordinates finding the uses of the ssa_def corresponding
+ * to the entry and sticking them in the ssa_worklist.
+ * Should be run on every entry that we change the information of.
+ */
+static void
+coordinate_uses(loop_variable_entry *entry, loop_analyze_state *state)
+{
+   struct set_entry *set_entry;
+   set_foreach(entry->ssa_def->uses, entry) {
+      nir_instr *instr = (nir_instr *)set_entry.key;
+      nir_ssa_def_worklist_push_head(state->ssa_defs, entry->ssa_def);
+   }
+}
+
+static void
+initialize_entry(nir_ssa_def *def, loop_analyze_state *state)
+{
+   loop_variable_entry *entry = get_lattice_entry(def, state);
+
+   entry->ssa_def = def;
+
+   if (def->parent_instr->type == nir_instr_type_load_const) {
+      entry->type = invariant;
+      return;
+   }
+
+   if (is_reaching_definition_outside_loop(entry, state)) {
+      entry->type = invariant;
+      return;
+   }
+
+   entry->type = undefined;
+}
+
+static void
+initialize_block_invariance(nir_block *block, void *state) {
+   nir_foreach_instr(block, instr) {
+      nir_foreach_ssa_def(instr, initialize_entry, block);
+   }
+}
 
 nir_loop_analyze_impl(nir_function_impl *impl)
 {
@@ -54,19 +275,61 @@ nir_loop_analyze_impl(nir_function_impl *impl)
    state.mem_ctx = ralloc_parent(impl);
    state.impl = impl;
 
+   state.entries = rzalloc_array(state.mem_ctx, struct loop_variable_entry,
+                                 impl.ssa_alloc);
+
    nir_loop_worklist_init(state.loops, 10, state.mem_ctx);
 
    nir_loop_worklist_add_all(state.loops, state.impl);
-/*
-   nir_cf_node *node = exec_node_data(nir_cf_node, exec_list_get_head(impl.body), node);
-   while (node != NULL) {
-      if (node->type == nir_cf_node_loop) {
 
+   /*
+    * How detecting loop invariant code works.
+    *    Make invariant all those operations who are
+    *       Constant or
+    *       Reaching definition is outside loop
+    *    While (changes has occured)
+    *       mark invariant all those operations whose operands are
+    *          constant
+    *          reaching definition outisde loop
+    *          has a single reaching definition in loop that is invariant
+    *             (in practice a phi with one loop variable and one from outside)
+    */
+   nir_foreach_block(impl, initialize_block_invariance, state);
+
+   while (state.ssa_defs->count > 0) {
+      /*
+       * All instructions in the list are here because
+       * we got new information about an operand.
+       */
+      nir_ssa_def *def;
+      nir_ssa_def_worklist_pop_head(state.ssa_defs, def);
+
+      /*
+       * We need to process the value, and check it if has changed state
+       */
+      loop_variable_entry *entry = get_loop_entry(def, state);
+      loop_variable_type old = entry->type;
+      is_loop_invariant(def, state);
+
+      if (old == entry->type) {
+         /*
+          * No change in value, so we don't need to do anything
+          */
+         continue;
+      } else {
+         /*
+          * There was a change in value, so we should add all the users
+          * to the worklist, as they will need to be checked again.
+          */
+         coordinate_uses(entry, state);
       }
-      node = nir_cf_node_next(node);
    }
-*/
 
+   while (!nir_loop_worklist_is_empty(state.loops)) {
+
+   }
+
+   // This is not correct, but just left here as a reminder
    if (state.num_loops_found != 0)
       nir_metadata_preserve(impl, nir_metadata_block_index |
                                   nir_metadata_dominance);
@@ -89,6 +352,45 @@ nir_loop_analyze(nir_shader *shader)
 
 
 
+
+
+
+
+
+
+
+/*
+ * This is most likely not useful at all
+ * We probably want to solve this in some other kind of way
+ */
+static void
+evaluate_invariants_for_block(nir_block *block, loop_analyze_state *state)
+{
+   nir_instr *instr;
+   nir_foreach_instr_safe(block, instr) {
+
+      switch (instr.type)
+      case nir_instr_type_alu: {
+         nir_alu_instr *alu = nir_instr_as_alu(instr);
+         evaluate_alu_instr(alu, state);
+      }
+      case nir_instr_type_phi: {
+         nir_phi_instr *phi = nir_instr_as_phi(instr);
+         evaluate_phi_instr(phi, state);
+      }
+      case nir_instr_type_load_const: {
+         nir_load_const_instr *lc = nir_instr_as_load_const(instr);
+         evaluate_load_const_instr(lc, state);
+      }
+      default: {
+         /*
+          * XXX: we need to handle other users than alu's probably.
+          * We can, for now, set that use as overdefined and bail.
+          * Uniform loads may be of interest?
+          */
+      }
+   }
+}
 
 
 /** Propagates the live in of succ across the edge to the live out of pred
