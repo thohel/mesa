@@ -26,6 +26,7 @@
 #include "nir.h"
 #include "nir_loop_worklist.h"
 #include "nir_ssa_def_worklist.h"
+#include "util/simple_list.h"
 
 typedef enum {
    unprocessed,
@@ -40,7 +41,19 @@ typedef struct {
 
    nir_ssa_def *ssa_def;
 
-} loop_variable_entry;
+   boolean is_read_before_written;           // Can not happen in ssa
+
+   boolean cond_or_nested_assignment;        // Doesn't matter as our algorithm can not find these false positives
+
+} loop_variable;
+
+typedef struct {
+   struct simple_node blocks;
+   struct simple_node ssa_defs;
+   struct simple_node ind_vars;
+   struct simple_node loop_inv_vars;
+   boolean contains_calls;
+} loop_entry;
 
 typedef struct {
    /*
@@ -51,7 +64,7 @@ typedef struct {
    void *mem_ctx;
    nir_function_impl *impl;
    uint32_t num_loops_found;
-   loop_variable_entry *entries;
+   loop_variable *vars;
 
    /*
     * This is based on using a loop worklist
@@ -59,6 +72,8 @@ typedef struct {
     * wrap our own little list around exec_list.
     */
    nir_loop_worklist *loops;
+
+   uint32_t number_of_loops;
 
    /*
     * Worklist of ssa-defs
@@ -538,3 +553,5 @@ nir_opt_constant_folding(nir_shader *shader)
 
    return progress;
 }
+
+
