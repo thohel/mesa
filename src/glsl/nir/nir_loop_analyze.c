@@ -23,6 +23,32 @@
  * IN THE SOFTWARE.
  */
 
+
+
+   /*
+    * basic induction variable:
+    *    i = i + c
+    *    i = i - c
+    *    i = i * c
+    *    i = i / c
+    *    where c is loop invariant or constant
+    *    defined only once in a loop
+    * derived induction variable
+    *    j = i * c1 + c2
+    *    j = i / c1 + c2
+    *    j = i * c1 - c2
+    *    j = i / c1 - c2
+    *    where c1 and c2 are loop invariant or constant
+    *    defined only once in a loop
+    *
+    *    triple(i, c1, c2) where i = basic induction variable, c1 and c2 invariant.
+    *    ^^ XXX: This has not been explored, but may proce usefull.
+    *
+    * Family of induction variable B is the set of induction
+    * variables A that are a linear function of B
+    */
+
+
 #include "nir.h"
 #include "util/list.h"
 
@@ -58,27 +84,6 @@ nir_foreach_block_in_cf_node(nir_cf_node *node, nir_foreach_block_cb cb,
                              void *state)
 {
    return foreach_cf_node(node, cb, false, state);
-}
-
-/*
- * no, it is not
- */
-static bool
-is_phi_invariant(nir_phi_instr *phi, loop_analyze_state *state)
-{
-   loop_variable *var = get_loop_var(phi.dest.ssa, state);
-   loop_variable *src_var;
-   boolean all_constant = true;
-
-   nir_foreach_phi_src(phi, src) {
-      src_var = get_loop_entry(src->src.ssa, state);
-
-      if (src_var->type == invariant)
-         continue;
-
-      if (!is_loop_invariant(src_var->ssa_def, state))
-         return false;
-   }
 }
 
 /*
@@ -667,110 +672,108 @@ is_var_derived_induction_var(loop_variable *var, nir_loop_info_state *state)
    if (var->info->type == basic_induction || var->info->type == invariant)
       return false;
 
-   if (var->info->def->parent_instr->type == nir_instr_type_alu) {
-      nir_alu_instr *alu = nir_instr_as_alu(var.info.def.parent_instr);
-      /*
-       * Mother of all pattern matching craziness.
-       *
-       * Basic overview:
-       * Check if outer operation is add or sub.
-       *    check if one of the operands is invariant.
-       *    check if other operand is basic induction variable (chatches the j = i + c case)
-       *    or if it is an operation of mul or div
-       *       check if one operand is basic induction variable and the other invariant. (catches the j = c1 * i + c2 case)
-       *  Check if outer operations mul or div
-       *     check if one operand is basic induction variable and the other invariant. (catches the j = c1 * i case)
-       */
-      loop_variable *basic_ind;
-      boolean is_derived = false;
+   /*
+    * Basic overview:
+    * Check if outer operation is add or sub.
+    *    check if one of the operands is invariant.
+    *    check if other operand is basic induction variable (chatches the j = i + c case)
+    *    or if it is an operation of mul or div
+    *       check if one operand is basic induction variable and the other invariant. (catches the j = c1 * i + c2 case)
+    *  Check if outer operations mul or div
+    *     check if one operand is basic induction variable and the other invariant. (catches the j = c1 * i case)
+    */
 
-      if (is_var_alu(var)) {
-         nir_alu_instr *alu = nir_instr_as_alu(var->info->def->parent_instr);
-         switch (alu->op) {
-         case nir_op_iadd:
-         case nir_op_fadd:
-         case nir_op_isub:
-         case nir_op_fsub:
-         case nir_op_imul:
-         case nir_op_fmul:
-         case nir_op_idiv:
-         case nir_op_fdiv:
-            int j;
-            for (int i = 0; i < 2; i++) {
-               j = 1 - i;
-               if (is_ssa_def_invariant(alu->src[i].src.ssa)) {
-                  if (is_ssa_def_basic_induction_var(alu->src[j].src.ssa)) {
-                     is_derived = true;
-                     basic_ind = get_loop_var(alu->src[j].src.ssa, state);
-                     break;
-                  }
-                  if (alu->src[j].src.parent_instr->type == nir_instr_type_alu) {
-                     nir_alu_instr *inner_alu = nir_instr_as_alu(alu.src[1].src.parent_instr);
-                     switch (inner_alu->op) {
-                     case nir_op_imul:
-                     case nir_op_fmul:
-                     case nir_op_idiv:
-                     case nir_op_fdiv:
-                        int m;
-                        for (int n = 0; n < 2; n++) {
-                           m = 1 - i;
-                           if (is_ssa_def_invariant(inner_alu->src[n].src.ssa) &&
-                               is_ssa_def_basic_induction_var(inner_alu->src[m].src.ssa)) {
-                              is_derived = true;
-                              basic_ind = get_loop_var(inner_alu->src[m].src.ssa);
-                              break;
-                           }
-                        }
+   /*
+    * We want to keep track of this, at least for now, until we figure out
+    * if we want to track the families of basic induction variables.
+    */
+   loop_variable *basic_ind;
+   boolean is_derived = false;
+   nir_alu_instr *alu = nir_instr_as_alu(var->info->def->parent_instr);
+
+   switch (alu->op) {
+   case nir_op_iadd:
+   case nir_op_fadd:
+   case nir_op_isub:
+   case nir_op_fsub:
+   case nir_op_imul:
+   case nir_op_fmul:
+   case nir_op_idiv:
+   case nir_op_fdiv:
+      int j;
+      for (int i = 0; i < 2; i++) {
+         j = 1 - i;
+         /* We need an invariant operand to have a derived induction variable */
+         if (is_ssa_def_invariant(alu->src[i].src.ssa)) {
+
+            /* If the other variable is basic induction variable we have
+             * ourselves a derived induction variable */
+            if (is_ssa_def_basic_induction_var(alu->src[j].src.ssa)) {
+               is_derived = true;
+               basic_ind = get_loop_var(alu->src[j].src.ssa, state);
+               break;
+            }
+
+            /*
+             * Check if the other operand is a multiply or divide that
+             * consist of a basic induction variable and an invariant
+             */
+            if (alu->src[j].src.parent_instr->type == nir_instr_type_alu) {
+               nir_alu_instr *inner_alu = nir_instr_as_alu(alu.src[j].src.parent_instr);
+               switch (inner_alu->op) {
+               /*
+                * We could have probably also added add and sub to this
+                * list, as an addition of two invariants and a basic induction
+                * variable is still a derived induction variable. Another
+                * possibility is to transform this into a recursive function.
+                * This can allow us to get n'th order polynomials.
+                */
+               case nir_op_imul:
+               case nir_op_fmul:
+               case nir_op_idiv:
+               case nir_op_fdiv:
+                  int m;
+                  for (int n = 0; n < 2; n++) {
+                     m = 1 - i;
+                     if (is_ssa_def_invariant(inner_alu->src[n].src.ssa) &&
+                         is_ssa_def_basic_induction_var(inner_alu->src[m].src.ssa)) {
+                        is_derived = true;
+                        basic_ind = get_loop_var(inner_alu->src[m].src.ssa);
+                        break;
                      }
                   }
                }
-
             }
-
          }
+      }
+      break;
+   case nir_op_ffma:
+      if (!is_ssa_def_invariant(alu->src[2].src.ssa, state))
+         break;
+      if (is_ssa_def_basic_induction_var(alu->src[0].src.ssa, state) &&
+          is_ssa_def_invariant(alu->src[1].src.ssa, state)) {
+         basic_ind = get_loop_var(alu->src[0].src.ssa, state);
+         is_derived = true;
+         break;
+      }
+      if (is_ssa_def_basic_induction_var(alu->src[1].src.ssa, state) &&
+          is_ssa_def_invariant(alu->src[0].src.ssa, state)) {
+         basic_ind = get_loop_var(alu->src[1].src.ssa, state);
+         is_derived = true;
+         break;
+      }
+      break;
+   }
+
+   if (is_derived)
+      return true;
+
    return false;
 }
 
 static void
 compute_induction_information(nir_loop_info_state *state)
 {
-   /*
-    * basic induction variable:
-    *    i = i + c
-    *    i = i - c
-    *    i = i * c
-    *    i = i / c
-    *    where c is loop invariant or constant
-    *    defined only once in a loop
-    * derived induction variable
-    *    j = i * c1 + c2
-    *    j = i / c1 + c2
-    *    j = i * c1 - c2
-    *    j = i / c1 - c2
-    *    where c1 and c2 are loop invariant or constant
-    *    defined only once in a loop
-    *    triple(i, c1, c2) where i = basic induction variable, c1 and c2 constant.
-    * Family of induction variable B is the set of induction
-    * variables A that are a linear function of B
-    *
-    * do {
-    *    changes = false;
-    *    for (statement s in loop) {
-    *       if (pattern matches basic induction variable) {
-    *          add to ind_var list
-    *          remove from process_list
-    *          mark as basic induction variable
-    *          changes = true;
-    *       }
-    *       if (patter matches linear induction variable) {
-    *          add to ind_var list
-    *          remove from process_list
-    *          mark as derived induction variable
-    *          changes = true;
-    *       }
-    *    }
-    * } while changes
-    */
    /*
     * Add all entries in the outermost part of the loop
     * to the processing_list.
@@ -783,6 +786,7 @@ compute_induction_information(nir_loop_info_state *state)
     * once to check if any of them are invariant conditionals for an if.
     * Then we can add the branches to the analysis, as they are invariant.
     */
+
    /*
     * Start running the induction variable routine.
     */
@@ -792,10 +796,6 @@ compute_induction_information(nir_loop_info_state *state)
    do {
       changes = false;
       LIST_FOR_EACH_ENTRY(var, state->process_list, info->process_link) {
-         if (var->info->type == invariant && var->info->def->if_uses)
-            // If it is invariant and used in if we can add variables in the
-            // then and else block to the list
-            continue;
 
          /*
           * It can't be an induction variable if it is invariant,
@@ -809,8 +809,8 @@ compute_induction_information(nir_loop_info_state *state)
 
          if (is_var_phi(var)) {
             /*
-             * We are really only interested in checssa_defking phi's for the
-             * basic induction variable case
+             * We are really only interested in checking phi's for the
+             * basic induction variable case as that is simple to detect
              */
             if (is_var_basic_induction_var(var, state)) {
                // Add to a induction-variable-list?
@@ -820,7 +820,7 @@ compute_induction_information(nir_loop_info_state *state)
          }
          if (is_var_alu(var)) {
             /*
-             * Derived induction variables are lines, and so must be alus.
+             * Derived induction variables are linear, and so must be alu's.
              */
             if (is_var_derived_induction_var(var, state)) {
                // Add to a induction-variable-list?
@@ -916,8 +916,8 @@ get_loop_info(nir_function_impl *impl, nir_loop *loop)
     * We may now have filled the process_list with instructions from inside
     * the nested blocks in the loop. Remove all instructions from the list
     * before we start computing induction information. We can probably just
-    * do LIST_INIT and leave all but the head in a cricular list as we will
-    * not be referencing them until we add them to the list again.
+    * do LIST_INIT and leave all as we will not be referencing them until
+    * we add them to the list again.
     */
    LIST_INIT(process_list);
 
@@ -943,15 +943,15 @@ nir_loop_analyze_impl(nir_function_impl *impl)
     *       start with the inner-upper-most loop
     *    while loops in loop_list
     *       pick loop of loop_list
-    *       run initialize_loop_entry
-    *          sets ssa-defs in loop it in_loop
-    *       run invariant detection
-    *       run induction detection
+    *       run analyze-loop
     */
    state.vars = rzalloc_array(state.mem_ctx, struct loop_variable_entry,
                                  impl.ssa_alloc);
 
+
+   // XXX: Probably removable
    nir_foreach_block(impl, initialize_block, state);
+
    /*
     * Run a snippet to find loops and add them to the list
     * The inner-most loop should be first in the list so we can process
@@ -991,38 +991,6 @@ nir_loop_analyze_impl(nir_function_impl *impl)
     * new phi's we just inserted to the array and get an array of all values.
     */
 
-   while (state.ssa_defs->count > 0) {
-      /*
-       * All instructions in the list are here because
-       * we got new information about an operand.
-       */
-      nir_ssa_def *def;
-      nir_ssa_def_worklist_pop_head(state.ssa_defs, def);
-
-      /*
-       * We need to process the value, and check it if has changed state
-       */
-      loop_variable *var = get_loop_var(def, state);
-      loop_variable_type old = var->type;
-      is_loop_invariant(def, state);
-
-      if (old == var->type) {
-         /*
-          * No change in value, so we don't need to do anything
-          */
-         continue;
-      } else {
-         /*
-          * There was a change in value, so we should add all the users
-          * to the worklist, as they will need to be checked again.
-          */
-         coordinate_uses(var, state);
-      }
-   }
-
-   while (!nir_loop_worklist_is_empty(state.loops)) {
-
-   }
 
    // This is not correct, but just left here as a reminder
    if (state.num_loops_found != 0)
