@@ -25,37 +25,56 @@
 
 
 
-   /*
-    * basic induction variable:
-    *    i = i + c
-    *    i = i - c
-    *    i = i * c
-    *    i = i / c
-    *    where c is loop invariant or constant
-    *    defined only once in a loop
-    * derived induction variable
-    *    j = i * c1 + c2
-    *    j = i / c1 + c2
-    *    j = i * c1 - c2
-    *    j = i / c1 - c2
-    *    where c1 and c2 are loop invariant or constant
-    *    defined only once in a loop
-    *
-    *    triple(i, c1, c2) where i = basic induction variable, c1 and c2 invariant.
-    *    ^^ XXX: This has not been explored, but may proce usefull.
-    *
-    * Family of induction variable B is the set of induction
-    * variables A that are a linear function of B
-    *
-    * This algorithm is kinda slow as it retries all the variables
-    * upon each run of the pass. That's not cool. Could make it demand driven
-    * and use a worklist similar to the way done in SCCP.
-    *
-    * If one of the operands is an induction variable
-    * Can not be loop invariant.
-    * Can be used as some king of test / validation
-    */
-
+/*
+ * basic induction variable:
+ *    i = i + c
+ *    i = i - c
+ *    i = i * c
+ *    i = i / c
+ *    where c is loop invariant or constant
+ *    defined only once in a loop
+ *
+ * derived induction variable
+ *    j = i * c1 + c2
+ *    j = i / c1 + c2
+ *    j = i * c1 - c2
+ *    j = i / c1 - c2
+ *    where c1 and c2 are loop invariant or constant
+ *    defined only once in a loop
+ *    i is basic induction variable
+ *
+ *    triple(i, c1, c2) where i = basic induction variable, c1 and c2 invariant.
+ *    ^^ XXX: This has not been explored, but may proce usefull.
+ *
+ * Family of induction variable B is the set of induction
+ * variables A that are a linear function of B
+ *
+ * This algorithm is kinda slow as it retries all the variables
+ * upon each run of the pass. That's not cool. Could make it demand driven
+ * and use a worklist similar to the way done in SCCP.
+ *
+ * If one of the operands is an induction variable
+ * Can not be loop invariant.
+ * Can be used as some king of test / validation
+ *
+ * We can run whole-shader analysis or analyze per-loop on request.
+ * Do we want to imlement both? Or do we only want to run whole-shader?
+ * Things like nest-depth will be hard to do if doing per-loop.
+ *    (We can do it offcourse, just need to have the shader and check the loops)
+ *
+ *
+ * We need to check the conditional of any
+ * diverging control flow inside the loop. If the conditional is invariant
+ * then we can add the defs in the then and else branch to the list of
+ * functions that we want to analyze. This can, in practice, be done by
+ * checking each instruction we set to invariant if it is a condition
+ * for a conditional or not. I'm not actually sure though if this is
+ * necessary. It is freakin' hard to find good papers on how to find
+ * loop invariants, and what to mark.
+ *
+ * For the time being I see no reason why this shouldn't work.
+ * I'll need to play around with it some though, both in my head and code.
+ */
 
 #include "nir.h"
 #include "util/list.h"
@@ -80,28 +99,29 @@ typedef struct {
    /* The loop we store information for */
    nir_loop *loop;
 
-   /* Array of info's for each def in loop */
+   /* Array of info's for each def in loop
+    * XXX: We probably want to change to a list.
+    */
    nir_loop_ssa_def_info *def_infos;
 
+   /* XXX: Might not be needed if we go the list-way */
    uint32_t num_ssa_defs_in_loop;
 
    /* In the case of a nested loop this stores the surrounding loop */
    nir_loop *parent_loop;
 
-   /* The nesting depth of this loop. We start at 1 (blocks in main loop are 0 */
+   /* The nesting depth of this loop. Starts at 1 (blocks in main() are 0) */
    uint32_t nest_depth;
 
+   /* How many times the loop is run (if known) */
    uint32_t trip_count;
    boolean is_trip_count_known;
 
-   // A list of the loop_vars to process
+   /* The ssa_defs that are invariant */
    struct list_head invariant_list;
 
-   /* The ssa_defs that are invariant */
-   nir_loop_ssa_def_info *invariants;
-
    /* The ssa_defs that are induction variables */
-   nir_loop_ssa_def_info *inductions;
+   struct list_head induction_list;
 } nir_loop_info;
 
 typedef struct {
@@ -109,6 +129,7 @@ typedef struct {
    struct list_head process_link;
    struct list_head loop_link;
    struct list_head invariant_link;
+   struct list_head induction_link;
    boolean in_loop;
 } loop_variable;
 
@@ -118,7 +139,12 @@ typedef struct {
    // Loop_variable for all ssa_defs in function
    loop_variable *all_vars;
 
-   // A list of the loop_vars in the loop
+   /*
+    * A list of the loop_vars in the loop
+    * XXX: This is not used as of now and can probably be dropped.
+    * It depends on how user friendly we want the information we send back to be
+    * We already have the list of induction variables, so might be "double info".
+    */
    struct list_head loop_vars;
 
    // A list of the loop_vars to process
@@ -190,10 +216,10 @@ add_ssa_defs_in_block_to_process_list(nir_block *block, nir_loop_info_state *sta
 static inline void
 foreach_block_in_loop_outer_layer(nir_loop *loop, nir_foreach_block_cb cb, void *state)
 {
-      foreach_list_typed_safe(nir_cf_node, node, node, &loop->body) {
-         if (node->type == nir_cf_node_block)
-            cb(nir_cf_node_as_block(node), state);
-      }
+   foreach_list_typed_safe(nir_cf_node, node, node, &loop->body) {
+      if (node->type == nir_cf_node_block)
+         cb(nir_cf_node_as_block(node), state);
+   }
 }
 
 static inline bool
@@ -211,8 +237,6 @@ is_ssa_def_invariant(loop_variable *var, nir_loop_info_state *state)
    assert(var->info->type != basic_induction && var->info->type != derived_induction);
 
    /*
-    * Process value
-    *
     * There are three rules to follow:
     *    Are all the operands from outside the loop?
     *    Are all the operands loop invariant?
@@ -220,16 +244,6 @@ is_ssa_def_invariant(loop_variable *var, nir_loop_info_state *state)
     *       Then it is loop invariant
     *       (The "combination of the two" part is solved by marking all
     *        variables that are outside the loop as invariant)
-    *
-    * An expression is invariant in a loop L iff:
-    *  (base cases)
-    *    – it’s a constant
-    *    – it’s a variable use, all of whose single defs are outside of L
-    *  (inductive cases)
-    *    – it’s a pure computation all of whose args are loopinvariant
-    *    – it’s a variable use whose single reaching def, and the
-    *          rhs of that def is loop-invariant
-    *    - Phi-functions are not pure, so they can "fuck things up"
     */
 
    nir_ssa_def *def = var->info->def;
@@ -288,6 +302,16 @@ compute_invariance_information(nir_loop_info_state *state)
 
    /*
     * XXX: We might just say that "anything that does not have a phi is invariant" ?
+    *
+    * An expression is invariant in a loop L iff:
+    *  (base cases)
+    *    – it’s a constant
+    *    – it’s a variable use, all of whose single defs are outside of L
+    *  (inductive cases)
+    *    – it’s a pure computation all of whose args are loopinvariant
+    *    – it’s a variable use whose single reaching def, and the
+    *          rhs of that def is loop-invariant
+    *    - Phi-functions are not pure, so they can "fuck things up"
     */
 
    boolean changes;
@@ -513,9 +537,6 @@ compute_induction_information(nir_loop_info_state *state)
     * Might not be usefull if we decide to add loop unswitching
     */
 
-   /*
-    * Start running the induction variable routine.
-    */
    boolean changes;
    loop_variable *var;
 
@@ -526,7 +547,7 @@ compute_induction_information(nir_loop_info_state *state)
          /*
           * It can't be an induction variable if it is invariant,
           * so there is no point in checking. Remove it from the list
-          * so we avoid checking it once more later on.
+          * so we avoid checking it again.
           */
          if (var->info->type == invariant) {
             LIST_DEL(var->process_link);
@@ -541,18 +562,25 @@ compute_induction_information(nir_loop_info_state *state)
              * XXX: Is this assumption 100% correct?
              */
             if (is_var_basic_induction_var(var, state)) {
-               // Add to a induction-variable-list?
+               /* We also need to follow the phi to the alu_op
+                * or we can do this in the pass where we find it is induction
+                */
                LIST_DEL(var->process_link);
+               LIST_ADD(var->induction_link, state->info->induction_list);
                changes = true;
             }
          }
+
          if (is_var_alu(var)) {
             /*
              * Derived induction variables are linear, and so must be alu's.
              */
             if (is_var_derived_induction_var(var, state)) {
-               // Add to a induction-variable-list?
+               /* We also need to follow the phi to the alu_op
+                * or we can do this in the pass where we find it is induction
+                */
                LIST_DEL(var->process_link);
+               LIST_ADD(var->induction_link, state->info->induction_list);
                changes = true;
             }
          }
@@ -596,6 +624,46 @@ initialize_block(nir_block *block, nir_loop_info_state *state) {
    }
 }
 
+static void
+get_loop_info(nir_loop_info_state *state, nir_function_impl *impl)
+{
+   /*
+    * Initialize all variables to "outside_loop".
+    */
+   nir_foreach_block(impl, initialize_block, state);
+
+   /*
+    * Marking all instructions in the loop as in_loop.
+    * This simplifies checking if instructions are in the loop.
+    */
+   nir_foreach_block_in_cf_node(state->info->loop->cf_node,
+                                mark_block_as_in_loop, state);
+
+   /*
+    * Need to compute invariance information before induction
+    * as the induction analysis relies on invariance information
+    */
+   compute_invariance_information(state);
+
+   /*
+    * We may now have filled the process_list with instructions from inside
+    * the nested blocks in the loop. Remove all instructions from the list
+    * before we start computing induction information. We can probably just
+    * do LIST_INIT and leave all as we will not be referencing them until
+    * we add them to the list again.
+    */
+   LIST_INIT(state->process_list);
+
+   /*
+    * We have the invariance information, and so we can compute the
+    * state of, and detect, different induction variables.
+    */
+   compute_induction_information(state);
+}
+
+/*
+ * Gets info for a signle loop
+ */
 static nir_loop_info
 nir_get_loop_info(nir_function_impl *impl, nir_loop *loop)
 {
@@ -623,45 +691,9 @@ nir_get_loop_info(nir_function_impl *impl, nir_loop *loop)
    LIST_INITHEAD(process_list);
    state->process_list = process_list;
 
-   /*
-    * Initialize all variables to "outside_loop".
-    */
-   nir_foreach_block(impl, initialize_block, state);
-
-   /*
-    * Marking all instructions in the loop as in_loop.
-    * This simplifies checking if instructions are in the loop.
-    */
-   nir_foreach_block_in_cf_node(loop->cf_node, mark_block_as_in_loop, state);
-
-   /*
-    * Need to compute invariance information before induction
-    * as the induction analysis relies on invariance information
-    */
-   compute_invariance_information(state);
-
-   /*
-    * We may now have filled the process_list with instructions from inside
-    * the nested blocks in the loop. Remove all instructions from the list
-    * before we start computing induction information. We can probably just
-    * do LIST_INIT and leave all as we will not be referencing them until
-    * we add them to the list again.
-    */
-   LIST_INIT(process_list);
-
-   /*
-    * We have the invariance information, and so we can compute the
-    * state of, and detect, different induction variables.
-    */
-   compute_induction_information(state);
-
-   return info;
+   get_loop_info(state, impl);
+   return state.info;
 }
-
-
-
-
-
 
 static nir_loop_info_state
 get_loops_ordered(nir_function_impl *impl, void *mem_ctx)
@@ -711,35 +743,22 @@ get_loops_ordered(nir_function_impl *impl, void *mem_ctx)
    return head;
 }
 
-
+/*
+ * Gets loop info for all loops in a nir_function_impl
+ */
 nir_loop_analyze_impl(nir_function_impl *impl)
 {
-   loop_analyze_state state;
+   nir_loop_info_pass_state state;
 
    state.mem_ctx = ralloc_parent(impl);
    state.impl = impl;
-
-   /*
-    * To analyze function
-    *    add loops to loop_list
-    *       start with the inner-upper-most loop
-    *    while loops in loop_list
-    *       pick loop of loop_list
-    *       run analyze-loop
-    */
-   state.vars = rzalloc_array(state.mem_ctx, struct loop_variable_entry,
-                                 impl.ssa_alloc);
-
-
-   // XXX: Probably removable
-   nir_foreach_block(impl, initialize_block, state);
 
    /*
     * Run a snippet to find loops and add them to the list
     * The inner-most loop should be first in the list so we can process
     * that first afterwards.
     */
-   state.loops = get_loops_ordered(impl, state.mem_ctx);
+   state.loop_states = get_loops_ordered(impl, state.mem_ctx);
 
    /*
     * Recursive method for detecting loop depth:
@@ -752,7 +771,9 @@ nir_loop_analyze_impl(nir_function_impl *impl)
     */
 
    /*
-    * We can now probably take one loop from the list and initialize it.
+    * Method for getting LCSSA:
+    *
+    * Take one loop from the list and initialize it.
     * We should have already initialized all the values to "outside_loop"
     * and then we set those values that are inside the loop to "inside_loop".
     *
@@ -765,35 +786,25 @@ nir_loop_analyze_impl(nir_function_impl *impl)
     * we do not need their information to calculate invariance information.
     * We can therefore safely proceed with calculating invariance information.
     *
-    * We can possibly also calculate the induction variable information.
-    * When this is done we should repopulate our lists of variables. There are
-    * some important things that need to be considered.
-    *
-    * This can now be an "outer loop" in a loop nest. We should not add the
-    * instructions in the inner loop(s) to our list of values to process.
-    * If we do we will get the wrong information for them (they will be marked
-    * invariant). We might want some kind of cool variable to tell us that
-    * this is inside a nested loop, so that we can skip it easily. The reason
-    * being it might end up being a src for something in the later part of the,
-    * and so we can wrongly assume it is invariant, even though that is only the
-    * case for the inner-most loop.
-    *
     * We may consider using the growing array Jason started to implement. That
     * way we can retain all our information and at the same time just add the
     * new phi's we just inserted to the array and get an array of all values.
     */
 
-
-   nir_get_loop_info(impl, loop);
-
-   // This is not correct, but just left here as a reminder
-   if (state.num_loops_found != 0)
-      nir_metadata_preserve(impl, nir_metadata_block_index |
-                                  nir_metadata_dominance);
+   nir_loop_info_state *loop_state;
+   list_for_each_entry(struct nir_loop_info_state, loop_state, state->loop_states, link) {
+      get_loop_info(loop_state, impl);
+   }
 
    return state.progress;
 }
 
+/*
+ * Function for getting loop information for a complete shader.
+ * This depends on how we want to use the pass.
+ * Might want it to be a utility instead of saving stuff in the
+ * metadata as we will be constantly invalidating the metadata during opt.
+ */
 nir_loop_analyze(nir_shader *shader)
 {
    bool progress = false;
@@ -806,9 +817,9 @@ nir_loop_analyze(nir_shader *shader)
    return progress;
 }
 
-
-
 /* -
+ * Example of loop in NIR-ssa
+ *
  * block block_4:
    /* preds: block_3
    vec1 ssa_11 = fmov -ssa_715.yyzw
@@ -836,20 +847,4 @@ nir_loop_analyze(nir_shader *shader)
       vec1 ssa_76 = fadd ssa_228.xxxx, ssa_210.xxxx
       /* succs: block_5
    }
- */
-
-
-
-/*
- * We need to check the conditional of any
- * diverging control flow inside the loop. If the conditional is invariant
- * then we can add the defs in the then and else branch to the list of
- * functions that we want to analyze. This can, in practice, be done by
- * checking each instruction we set to invariant if it is a condition
- * for a conditional or not. I'm not actually sure though if this is
- * necessary. It is freakin' hard to find good papers on how to find
- * loop invariants, and what to mark.
- *
- * For the time being I see no reason why this shouldn't work.
- * I'll need to play around with it some though, both in my head and code.
  */
