@@ -46,284 +46,19 @@
     *
     * Family of induction variable B is the set of induction
     * variables A that are a linear function of B
+    *
+    * This algorithm is kinda slow as it retries all the variables
+    * upon each run of the pass. That's not cool. Could make it demand driven
+    * and use a worklist similar to the way done in SCCP.
+    *
+    * If one of the operands is an induction variable
+    * Can not be loop invariant.
+    * Can be used as some king of test / validation
     */
 
 
 #include "nir.h"
 #include "util/list.h"
-
-typedef struct {
-   /*
-    * Something should probably go here.
-    * I guess we want a list of all the loops
-    * that we find in our initial round of looking for loops.
-    */
-   void *mem_ctx;
-   nir_function_impl *impl;
-   uint32_t num_loops_found;
-   loop_variable *vars;
-
-   // A list of the loop_entries in the function
-   struct list_head loops;
-
-   loop_entry *current_entry;
-   uint32_t number_of_loops;
-
-   /*
-    * Worklist of ssa-defs
-    */
-   nir_ssa_def_worklist *ssa_defs;
-} loop_analyze_state;
-
-/*
- * Snipped from Connors Dead Control Flow Removal Series.
- * Located in nir.c / nir.h
- */
-static bool
-nir_foreach_block_in_cf_node(nir_cf_node *node, nir_foreach_block_cb cb,
-                             void *state)
-{
-   return foreach_cf_node(node, cb, false, state);
-}
-
-/*
- * Coordinates finding the uses of the ssa_def corresponding
- * to the entry and sticking them in the ssa_worklist.
- * Should be run on every entry that we change the information of.
- */
-static void
-coordinate_uses(loop_variable *var, loop_analyze_state *state)
-{
-   struct set_entry *set_entry;
-   set_foreach(var->ssa_def->uses, var) {
-      nir_instr *instr = (nir_instr *)set_entry.key;
-      nir_ssa_def_worklist_push_head(state->ssa_defs, var->ssa_def);
-   }
-}
-
-static bool
-nir_cf_node_contains(nir_cf_node *container, nir_cf_node *content)
-{
-   if (foreach_cf_node(container, does_cf_node_match, false, content))
-      return true;
-
-   return false;
-}
-
-static bool
-does_cf_node_match(nir_cf_node *a, nir_cf_node *b)
-{
-   return a == b;
-}
-
-static loop_entry
-get_loops_ordered(nir_function_impl *impl, void *mem_ctx)
-{
-   loop_entry *head = ralloc(mem_ctx, struct loop_entry);
-   LIST_INITHEAD(head);
-
-   bool loop_found = false;
-   /*
-    * Find all loops and add them to the list
-    */
-   foreach_list_typed(nir_cf_node, cur, node, impl->body) {
-      if (cur->type == nir_cf_node_loop) {
-         nir_loop *loop = nir_cf_node_as_loop(cur);
-         loop_entry *entry = ralloc(mem_ctx, struct loop_entry);
-         entry->loop = loop;
-         LIST_ADD(entry->loop_link, head);
-         loop_found = true;
-      }
-   }
-
-   if (!loop_found)
-      return NULL;
-
-   /*
-    * Walk through the list and shuffle loops around until we get
-    * a list of loops where the deepest loops are first.
-    */
-   bool changed = true;
-   while (changed) {
-      list_for_each_entry_safe(loop_entry, a, head, a.loop_link) {
-         list_for_each_entry_from_safe(loop_entry, b, a, head, b.loop_link) {
-            if (nir_cf_node_contains(a, b)) {
-               /*
-                * The loop b was nested inside loop a
-                * Move loop b to the front of the list.
-                */
-               LIST_DEL(b);
-               LIST_ADD(b, head);
-               changed = true;
-            }
-         }
-      }
-   }
-
-   return head;
-}
-
-static void
-find_loops(nir_function_impl *impl, loop_analyze_state *state)
-{
-   /*
-    * Walk through al cf_nodes to find loops
-    * Add them in the smart order
-    * Inner loops should go first in list.
-    * Probably benefitial to add from the outer to the inner,
-    * and apped to the front of the list. Should make the inner loop the
-    * first to be processed.
-    */
-   foreach_list_typed(nir_cf_node, cur, node, impl->body) {
-      if (cur->type == nir_cf_node_loop) {
-         nir_loop *loop = nir_cf_node_as_loop(cur);
-         loop_entry *entry = ralloc(state.mem_ctx, struct loop_entry);
-         entry->loop = loop;
-         LIST_ADD(entry->loop_list, state->loops);
-      }
-   }
-
-   list_for_each_entry() {
-      list_for_each_entry_from() {
-         if nir_cf_node_contains(nir_cf_node *container, nir_cf_node *content)
-            // take the cf node out of the list and add to list before this entry
-            /*
-             * May instead want to find loop depth, and sort the list by that instead.
-             *
-             */
-      }
-   }
-
-}
-
-
-
-
-
-/** Propagates the live in of succ across the edge to the live out of pred
- *
- * Phi nodes exist "between" blocks and all the phi nodes at the start of a
- * block act "in parallel".  When we propagate from the live_in of one
- * block to the live out of the other, we have to kill any writes from phis
- * and make live any sources.
- *
- * Returns true if updating live out of pred added anything
- */
-static bool
-propagate_across_edge(nir_block *pred, nir_block *succ,
-                      struct live_variables_state *state)
-{
-   NIR_VLA(BITSET_WORD, live, state->bitset_words);
-   memcpy(live, succ->live_in, state->bitset_words * sizeof *live);
-
-   nir_foreach_instr(succ, instr) {
-      if (instr->type != nir_instr_type_phi)
-         break;
-      nir_phi_instr *phi = nir_instr_as_phi(instr);
-
-      assert(phi->dest.is_ssa);
-      set_ssa_def_dead(&phi->dest.ssa, live);
-   }
-
-   nir_foreach_instr(succ, instr) {
-      if (instr->type != nir_instr_type_phi)
-         break;
-      nir_phi_instr *phi = nir_instr_as_phi(instr);
-
-      nir_foreach_phi_src(phi, src) {
-         if (src->pred == pred) {
-            set_src_live(&src->src, live);
-            break;
-         }
-      }
-   }
-
-   BITSET_WORD progress = 0;
-   for (unsigned i = 0; i < state->bitset_words; ++i) {
-      progress |= live[i] & ~pred->live_out[i];
-      pred->live_out[i] |= live[i];
-   }
-   return progress != 0;
-}
-
-void
-nir_live_variables_impl(nir_function_impl *impl)
-{
-   struct live_variables_state state;
-
-   /* We start at 1 because we reserve the index value of 0 for ssa_undef
-    * instructions.  Those are never live, so their liveness information
-    * can be compacted into a single bit.
-    */
-   state.num_ssa_defs = 1;
-   nir_foreach_block(impl, index_ssa_definitions_block, &state);
-
-   nir_block_worklist_init(&state.worklist, impl->num_blocks, NULL);
-
-   /* We now know how many unique ssa definitions we have and we can go
-    * ahead and allocate live_in and live_out sets and add all of the
-    * blocks to the worklist.
-    */
-   state.bitset_words = BITSET_WORDS(state.num_ssa_defs);
-   nir_foreach_block(impl, init_liveness_block, &state);
-
-   /* We're now ready to work through the worklist and update the liveness
-    * sets of each of the blocks.  By the time we get to this point, every
-    * block in the function implementation has been pushed onto the
-    * worklist in reverse order.  As long as we keep the worklist
-    * up-to-date as we go, everything will get covered.
-    */
-   while (!nir_block_worklist_is_empty(&state.worklist)) {
-      /* We pop them off in the reverse order we pushed them on.  This way
-       * the first walk of the instructions is backwards so we only walk
-       * once in the case of no control flow.
-       */
-      nir_block *block = nir_block_worklist_pop_head(&state.worklist);
-
-      memcpy(block->live_in, block->live_out,
-             state.bitset_words * sizeof(BITSET_WORD));
-
-      nir_if *following_if = nir_block_get_following_if(block);
-      if (following_if)
-         set_src_live(&following_if->condition, block->live_in);
-
-      nir_foreach_instr_reverse(block, instr) {
-         /* Phi nodes are handled seperately so we want to skip them.  Since
-          * we are going backwards and they are at the beginning, we can just
-          * break as soon as we see one.
-          */
-         if (instr->type == nir_instr_type_phi)
-            break;
-
-         nir_foreach_ssa_def(instr, set_ssa_def_dead, block->live_in);
-         nir_foreach_src(instr, set_src_live, block->live_in);
-      }
-
-      /* Walk over all of the predecessors of the current block updating
-       * their live in with the live out of this one.  If anything has
-       * changed, add the predecessor to the work list so that we ensure
-       * that the new information is used.
-       */
-      struct set_entry *entry;
-      set_foreach(block->predecessors, entry) {
-         nir_block *pred = (nir_block *)entry->key;
-         if (propagate_across_edge(pred, block, &state))
-            nir_block_worklist_push_tail(&state.worklist, pred);
-      }
-   }
-
-   nir_block_worklist_fini(&state.worklist);
-}
-
-
-
-
-
-
-
-
-
-
 
 typedef enum {
    unprocessed,
@@ -356,11 +91,14 @@ typedef struct {
    /* The nesting depth of this loop. We start at 1 (blocks in main loop are 0 */
    uint32_t nest_depth;
 
+   uint32_t trip_count;
+   boolean is_trip_count_known;
+
    // A list of the loop_vars to process
    struct list_head invariant_list;
 
    /* The ssa_defs that are invariant */
-//   nir_loop_ssa_def_info *invariants;
+   nir_loop_ssa_def_info *invariants;
 
    /* The ssa_defs that are induction variables */
    nir_loop_ssa_def_info *inductions;
@@ -385,7 +123,45 @@ typedef struct {
 
    // A list of the loop_vars to process
    struct list_head process_list;
+
+   struct list_head loop_states_link;
 } nir_loop_info_state;
+
+typedef struct {
+   void *mem_ctx;
+   nir_function_impl *impl;
+   uint32_t number_of_loops;
+   uint32_t max_nesting_depth;
+
+   // A list of the loops in the function
+   struct list_head loop_states;
+} nir_loop_info_pass_state;
+
+/*
+ * Snipped from Connors Dead Control Flow Removal Series.
+ * Located in nir.c / nir.h
+ */
+static bool
+nir_foreach_block_in_cf_node(nir_cf_node *node, nir_foreach_block_cb cb,
+                             void *state)
+{
+   return foreach_cf_node(node, cb, false, state);
+}
+
+static bool
+nir_cf_node_contains(nir_cf_node *container, nir_cf_node *content)
+{
+   if (foreach_cf_node(container, does_cf_node_match, false, content))
+      return true;
+
+   return false;
+}
+
+static bool
+does_cf_node_match(nir_cf_node *a, nir_cf_node *b)
+{
+   return a == b;
+}
 
 /*
  * Gets the loop entry for the given ssa def
@@ -444,9 +220,6 @@ is_ssa_def_invariant(loop_variable *var, nir_loop_info_state *state)
     *       Then it is loop invariant
     *       (The "combination of the two" part is solved by marking all
     *        variables that are outside the loop as invariant)
-    *    If one of the operands are induction variables
-    *       Can not be loop invariant (But we don't know this yet, so it only
-    *       makes sense as some king of test / validation)
     *
     * An expression is invariant in a loop L iff:
     *  (base cases)
@@ -470,8 +243,7 @@ is_ssa_def_invariant(loop_variable *var, nir_loop_info_state *state)
          src = get_loop_var(alu->src[i].src.ssa, state);
          /*
           * We have two possibilities; optimistic or pessimistic
-          * We can solve it mostly in the way it is solved for SCCP
-          * or we can use a system of recursion. This is recursive as is.
+          *
           * One problem is that this is pessimistic, and so we may not
           * detect all the possible loop invariants.
           */
@@ -499,10 +271,7 @@ is_ssa_def_invariant(loop_variable *var, nir_loop_info_state *state)
 
    default:
       var->info->type = undefined;
-      /*
-       * XXX: we need to handle other users than alu's probably.
-       * Uniform loads may be of interest?
-       */
+      /* XXX: we need to handle other users than alu's probably. */
       return false;
 }
 
@@ -518,31 +287,7 @@ compute_invariance_information(nir_loop_info_state *state)
                                      state);
 
    /*
-    * do {
-    *    change = false;
-    *    for_each_in_list(process_list) {
-    *       if (operand = const || !in_loop || invariant) {
-    *          add to invariant list
-    *          remove from process list
-    *          if (conditional)
-    *             add then and else branch instructions to process list
-    *             (but not nested ones, as we don't know if the conditions
-    *              inside the branches are invariant)
-    *          changes = true;
-    *       }
-    *    }
-    * } while changes
-    *
-    * Phi nodes are not invariant (well, they can be if only one
-    * of the branches it is merging is executed in the loop;
-    * The condition for the divergence is invariant)
-    *
-    * This algorithm is kinda slow as it retries all the variables
-    * upon each run of the pass. That's not cool. Could make it demand driven
-    * and use a worklist similar to the way done in SCCP.
-    *
     * XXX: We might just say that "anything that does not have a phi is invariant" ?
-    *
     */
 
    boolean changes;
@@ -561,11 +306,10 @@ compute_invariance_information(nir_loop_info_state *state)
                 * we should not add conditionals inside this block for the
                 * same reason we did not initially add this block.
                 * This will recurse, and so if there are conditionals inside
-                * this if that we resolve then that conditional will hit
-                * this path, and so those blocks will also be added.
+                * this that we resolve then that conditional will hit
+                * this path, and so those blocks will also be analyzed.
                 */
             }
-
             changes = true;
          }
       }
@@ -620,46 +364,37 @@ is_var_basic_induction_var(loop_variable *var, nir_loop_info_state *state)
    if (var->info->type == derived_induction || var->info->type == invariant)
       return false;
 
-   /*
-    * This might not be the best way to go about it. Might instead
-    * want to check if it is phi-instruction, and if it is check if
-    * it is an induction variable. Or we can use both. Who knows?
-    */
+   nir_phi_instr *phi = nir_instr_as_phi(var->info->def->parent_instr);
 
-   /*
-    * Don't need to check if it is phi, as that is the way we decide what
-    * type of induction variable we want to check for.
-    */
-//   if (var->info->def->parent_instr->type == nir_instr_type_phi) { // This line can be removed since we know it is a phi. This is of course only if we decide on detection basic induction variables only on the phi instruction
-      nir_phi_instr *phi = nir_instr_as_phi(var->info->def->parent_instr);
-      boolean recursive_assignment = false;
-      boolean invariant_operand = false;
-      boolean valid_operation = false;
-      boolean phi_src_outside_loop = false;
-      nir_foreach_phi_src(phi, src) {
-         loop_variable *src_var = get_loop_var(src->src.ssa, state);
-         if (src_var->in_loop == false)
-            phi_src_outside_loop = true;
+   boolean recursive_assignment = false;
+   boolean invariant_operand = false;
+   boolean valid_operation = false;
+   boolean phi_src_outside_loop = false;
 
-         if (is_var_alu(src_var)) {
-            nir_alu_instr *alu = nir_instr_as_alu(src_var->info->def->parent_instr);
-            if (alu->op == nir_op_fadd || alu->op == nir_op_iadd ||
-                alu->op == nir_op_fsub || alu->op == nir_op_isub ||
-                alu->op == nir_op_fmul || alu->op == nir_op_imul ||
-                alu->op == nir_op_fdiv || alu->op == nir_op_idiv) {
-               valid_operation = true;
-               if (is_ssa_def_invariant(alu->src[0].src.ssa) ||
-                   is_ssa_def_invariant(alu->src[1].src.ssa))
-                  invariant_operand = true;
-               if (alu->src[0].src.ssa->index == src->src.ssa->index ||
-                   alu->src[1].src.ssa->index == src->src.ssa->index)
-                  recursive_assignment = true;
-            }
+   nir_foreach_phi_src(phi, src) {
+      loop_variable *src_var = get_loop_var(src->src.ssa, state);
+      if (src_var->in_loop == false)
+         phi_src_outside_loop = true;
+
+      if (is_var_alu(src_var)) {
+         nir_alu_instr *alu = nir_instr_as_alu(src_var->info->def->parent_instr);
+         if (alu->op == nir_op_fadd || alu->op == nir_op_iadd ||
+             alu->op == nir_op_fsub || alu->op == nir_op_isub ||
+             alu->op == nir_op_fmul || alu->op == nir_op_imul ||
+             alu->op == nir_op_fdiv || alu->op == nir_op_idiv) {
+            /* XXX: Needs to figure out if mul and div should he included */
+            valid_operation = true;
+            if (is_ssa_def_invariant(alu->src[0].src.ssa) ||
+                is_ssa_def_invariant(alu->src[1].src.ssa))
+               invariant_operand = true;
+            if (alu->src[0].src.ssa->index == src->src.ssa->index ||
+                alu->src[1].src.ssa->index == src->src.ssa->index)
+               recursive_assignment = true;
          }
       }
-      return recursive_assignment && invariant_operand && valid_operation && phi_src_outside_loop;
-//   }
-//   return false;
+   }
+   return recursive_assignment && invariant_operand &&
+          valid_operation && phi_src_outside_loop;
 }
 
 static inline bool
@@ -673,21 +408,11 @@ is_var_derived_induction_var(loop_variable *var, nir_loop_info_state *state)
       return false;
 
    /*
-    * Basic overview:
-    * Check if outer operation is add or sub.
-    *    check if one of the operands is invariant.
-    *    check if other operand is basic induction variable (chatches the j = i + c case)
-    *    or if it is an operation of mul or div
-    *       check if one operand is basic induction variable and the other invariant. (catches the j = c1 * i + c2 case)
-    *  Check if outer operations mul or div
-    *     check if one operand is basic induction variable and the other invariant. (catches the j = c1 * i case)
-    */
-
-   /*
     * We want to keep track of this, at least for now, until we figure out
     * if we want to track the families of basic induction variables.
     */
    loop_variable *basic_ind;
+
    boolean is_derived = false;
    nir_alu_instr *alu = nir_instr_as_alu(var->info->def->parent_instr);
 
@@ -785,6 +510,7 @@ compute_induction_information(nir_loop_info_state *state)
     * Here we should probably also run through all instructions in the list
     * once to check if any of them are invariant conditionals for an if.
     * Then we can add the branches to the analysis, as they are invariant.
+    * Might not be usefull if we decide to add loop unswitching
     */
 
    /*
@@ -810,7 +536,9 @@ compute_induction_information(nir_loop_info_state *state)
          if (is_var_phi(var)) {
             /*
              * We are really only interested in checking phi's for the
-             * basic induction variable case as that is simple to detect
+             * basic induction variable case as that is simple to detect.
+             * All basic induction variables needs to have a phi node.
+             * XXX: Is this assumption 100% correct?
              */
             if (is_var_basic_induction_var(var, state)) {
                // Add to a induction-variable-list?
@@ -869,7 +597,7 @@ initialize_block(nir_block *block, nir_loop_info_state *state) {
 }
 
 static nir_loop_info
-get_loop_info(nir_function_impl *impl, nir_loop *loop)
+nir_get_loop_info(nir_function_impl *impl, nir_loop *loop)
 {
    void *mem_ctx;
 
@@ -930,6 +658,60 @@ get_loop_info(nir_function_impl *impl, nir_loop *loop)
    return info;
 }
 
+
+
+
+
+
+static nir_loop_info_state
+get_loops_ordered(nir_function_impl *impl, void *mem_ctx)
+{
+   nir_loop_info_state *head = ralloc(mem_ctx, struct nir_loop_info_state);
+   LIST_INITHEAD(head);
+
+   bool loop_found = false;
+   /*
+    * Find all loops and add them to the list
+    */
+   foreach_list_typed(nir_cf_node, cur, node, impl->body) {
+      if (cur->type == nir_cf_node_loop) {
+         nir_loop *loop = nir_cf_node_as_loop(cur);
+         nir_loop_info_state *loop_state = ralloc(mem_ctx, struct nir_loop_info_state);
+         loop_state->info->loop = loop;
+         LIST_ADD(loop_state->loop_states_link, head);
+         loop_found = true;
+      }
+   }
+
+   if (!loop_found)
+      return NULL;
+
+   /*
+    * Walk through the list and shuffle loops around until we get
+    * a list of loops where the deepest loops are first.
+    */
+   bool changed = true;
+   nir_loop_info_state *one;
+   nir_loop_info_state *two;
+   while (changed) {
+      list_for_each_entry_safe(nir_loop_info_state, one, head, head->loop_states_link) {
+         list_for_each_entry_from_safe(nir_loop_info_state, two, one, one->loop_states_link) {
+            if (nir_cf_node_contains(one, two)) {
+               /*
+                * The loop b was nested inside loop a
+                * Move loop b to the front of the list.
+                */
+               LIST_DEL(two);
+               LIST_ADD(two, head);
+               changed = true;
+            }
+         }
+      }
+   }
+   return head;
+}
+
+
 nir_loop_analyze_impl(nir_function_impl *impl)
 {
    loop_analyze_state state;
@@ -958,6 +740,16 @@ nir_loop_analyze_impl(nir_function_impl *impl)
     * that first afterwards.
     */
    state.loops = get_loops_ordered(impl, state.mem_ctx);
+
+   /*
+    * Recursive method for detecting loop depth:
+    *    - Start at the outermost loop.
+    *    - For each cf node
+    *       - if loop
+    *          - iterate depth counter
+    *          - set this loop as found loop's parent
+    *          - run the procedure on found loop.
+    */
 
    /*
     * We can now probably take one loop from the list and initialize it.
@@ -991,6 +783,8 @@ nir_loop_analyze_impl(nir_function_impl *impl)
     * new phi's we just inserted to the array and get an array of all values.
     */
 
+
+   nir_get_loop_info(impl, loop);
 
    // This is not correct, but just left here as a reminder
    if (state.num_loops_found != 0)
@@ -1047,15 +841,7 @@ nir_loop_analyze(nir_shader *shader)
 
 
 /*
- * Add outer block instructions to processing_list.
- *
- * For each block in loop
- *    for each ssa-def in block
- *       add ssa-def to processing_list
- *       mark as in_loop
- *
- * This is fine enough. But to actually calculate invariance information
- * we need to be a bit smarter. We need to check the conditional of any
+ * We need to check the conditional of any
  * diverging control flow inside the loop. If the conditional is invariant
  * then we can add the defs in the then and else branch to the list of
  * functions that we want to analyze. This can, in practice, be done by
