@@ -161,9 +161,17 @@ typedef struct {
    struct list_head invariant_link;
    struct list_head induction_link;
    boolean in_loop;
-   boolean in_conditional_block; // XXX: Not yet used
-   boolean in_nested_loop;       // XXX: Not yet used
+   boolean in_conditional_block;
+   boolean in_nested_loop;
 } loop_variable;
+
+typedef struct {
+   nir_if *nif;
+   /*
+    * Some more suitable fields like maybe indicated trip-count?
+    */
+   loop_variable *condition_var;
+} nir_loop_terminator;
 
 typedef struct {
    nir_loop_info *info;
@@ -705,6 +713,50 @@ initialize_block(nir_block *block, nir_loop_info_state *state) {
    }
 }
 
+static bool
+is_loop_terminator(nir_if *nif)
+{
+   /*
+    * If there is stuff in the else-block that means that this is not
+    * a simple break on true if-statement and so we bail.
+    * XXX: This is strictly copied from the glsl loop analysis pass,
+    * but the assumption should probably still be valid.
+    */
+   if (!exec_list_is_empty(nif->else_list))
+      return false; // There is stuff in the then-list. Therefore not a simple conditional break.
+
+   nir_cf_node *first_then = nir_if_first_then_node(nif);
+
+   nir_block *first_then_block = nir_cf_node_as_block(first_then);
+
+   nir_instr *first_instr = nir_block_first_instr(first_then_block);
+
+   if (first_instr->type == nir_jump_instr) {
+      nir_jump_instr *jump = nir_instr_as_jump(first_instr);
+      if (jump->type == nir_jump_break)
+         return true;
+   }
+
+   return false;
+}
+
+static void
+get_loop_terminators(nir_loop_info_state *state)
+{
+   foreach_list_typed_safe(nir_cf_node, node, node, state->info->loop->body) {
+      if (node->type == nir_cf_node_if) {
+         if (is_loop_terminator(nir_cf_node_as_if(node))) {
+            /*
+             * Add to list of loop terminators.
+             * ralloc a nir_loop_terminator
+             * Attach it to the list of terminators
+             * Get the loop_var for the conditional and set it in the struct XXX: Might prove to be unnecessary
+             */
+         }
+      }
+   }
+}
+
 static void
 get_loop_info(nir_loop_info_state *state, nir_function_impl *impl)
 {
@@ -740,6 +792,28 @@ get_loop_info(nir_loop_info_state *state, nir_function_impl *impl)
     * state of, and detect, different induction variables.
     */
    compute_induction_information(state);
+
+   /*
+    * We should now gather a list of the loop's terminators.
+    * This just writes to the state (eventually)
+    * Might want to rename the function for clarity
+    */
+   get_loop_terminators(state);
+
+   /*
+    * We can now run through each of the terminators of the loop
+    * and try to infer a possible trip-count.
+    * We need to check them all, and set the lowest trip-count as
+    * the trip-count of our loop as that is always the place it breaks.
+    * If one of the terminators has an undecidable trip-count then we
+    * can not safely assume anything about the duration of the loop.
+    * We can therefore not do much interesting.
+    * There are possibilities for doing some kind of unrolling even if
+    * one does not have a set unroll-count. This involves a switch-statement
+    * that has the same amount of cases as the unroll-factor, a so called
+    * "Duff's Device".
+    */
+
 }
 
 /*
@@ -772,6 +846,7 @@ nir_get_loop_info(nir_function_impl *impl, nir_loop *loop)
    state->process_list = process_list;
 
    get_loop_info(state, impl);
+
    return state.info;
 }
 
@@ -953,3 +1028,60 @@ nir_loop_analyze(nir_shader *shader)
 
    return progress;
 }
+
+
+
+
+
+ir_rvalue *
+get_basic_induction_increment(ir_assignment *ir, hash_table *var_hash)
+{
+   /* The RHS must be a binary expression.
+    */
+   ir_expression *const rhs = ir->rhs->as_expression();
+   if ((rhs == NULL)
+       || ((rhs->operation != ir_binop_add)
+      && (rhs->operation != ir_binop_sub)))
+      return NULL;
+
+   /* One of the of operands of the expression must be the variable assigned.
+    * If the operation is subtraction, the variable in question must be the
+    * "left" operand.
+    */
+   ir_variable *const var = ir->lhs->variable_referenced();
+
+   ir_variable *const op0 = rhs->operands[0]->variable_referenced();
+   ir_variable *const op1 = rhs->operands[1]->variable_referenced();
+
+   if (((op0 != var) && (op1 != var))
+       || ((op1 == var) && (rhs->operation == ir_binop_sub)))
+      return NULL;
+
+   ir_rvalue *inc = (op0 == var) ? rhs->operands[1] : rhs->operands[0];
+
+   if (inc->as_constant() == NULL) {
+      ir_variable *const inc_var = inc->variable_referenced();
+      if (inc_var != NULL) {
+    loop_variable *lv =
+       (loop_variable *) hash_table_find(var_hash, inc_var);
+
+         if (lv == NULL || !lv->is_loop_constant()) {
+            assert(lv != NULL);
+            inc = NULL;
+         }
+      } else
+    inc = NULL;
+   }
+
+   if ((inc != NULL) && (rhs->operation == ir_binop_sub)) {
+      void *mem_ctx = ralloc_parent(ir);
+
+      inc = new(mem_ctx) ir_expression(ir_unop_neg,
+                   inc->type,
+                   inc->clone(mem_ctx, NULL),
+                   NULL);
+   }
+
+   return inc;
+}
+
