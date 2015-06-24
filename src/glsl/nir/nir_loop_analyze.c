@@ -76,6 +76,39 @@
  * I'll need to play around with it some though, both in my head and code.
  */
 
+/* -
+ * Example of loop in NIR-ssa
+ *
+ * block block_4:
+   /* preds: block_3
+   vec1 ssa_11 = fmov -ssa_715.yyzw
+   /* succs: block_5
+   loop {
+      block block_5:
+      /* preds: block_4 block_8
+      vec1 ssa_699 = phi block_4: ssa_686, block_8: ssa_57
+      vec1 ssa_228 = phi block_4: ssa_11, block_8: ssa_76
+      vec1 ssa_15 = flt ssa_715.yyzw, ssa_228.xxxx
+      /* succs: block_6 block_7
+      if ssa_15 {
+         block block_6:
+         /* preds: block_5
+         break
+         /* succs: block_9
+      } else {
+         block block_7:
+         /* preds: block_5
+         /* succs: block_8
+      }
+      block block_8:
+      /* preds: block_7
+
+      vec1 ssa_76 = fadd ssa_228.xxxx, ssa_210.xxxx
+      /* succs: block_5
+   }
+ */
+
+
 #include "nir.h"
 #include "util/list.h"
 
@@ -202,6 +235,7 @@ get_loop_var(nir_ssa_def *value, nir_loop_info_state *state)
 static inline void
 add_ssa_def_to_process_list(nir_ssa_def *def, nir_loop_info_state *state)
 {
+   // XXX: This should skip adding undefined values to the list as we will never try to process them
    loop_variable *var = get_loop_var(def, state);
    LIST_ADD(var->process_link, state->process_list);
 }
@@ -761,6 +795,28 @@ nir_loop_analyze_impl(nir_function_impl *impl)
    state.loop_states = get_loops_ordered(impl, state.mem_ctx);
 
    /*
+    * To find loop depth
+    * - Start at the beginning of the list (deepest loops)
+    * - Check if this is contained within another loop.
+    * - If it is, check if that loop is contained in another loop.
+    * - Have an iterator that is incremented until we reach the outer layer
+    *      where the loop is no longer contained within another one.
+    * - Do this for all loop-alternatives
+    * - Choose the maximum as this loops nest depth.
+    *
+    * To find loop depth:
+    *    - Take one loop of list.
+    *    - If any of the other loops in the list are in this loop
+    *       - Increment it's loop-depth.
+    *    - Rinse and repeat
+    * This should give the correct loop depth for the loops,
+    * as a loop-in-loop-in-loop will be iterated twice as it is
+    * inside two loops, and therefore will get loop depth 3.
+    * If we traverse the list backwards we will be getting the loops
+    * in order, and so
+    *
+    *
+    *
     * Recursive method for detecting loop depth:
     *    - Start at the outermost loop.
     *    - For each cf node
@@ -816,35 +872,3 @@ nir_loop_analyze(nir_shader *shader)
 
    return progress;
 }
-
-/* -
- * Example of loop in NIR-ssa
- *
- * block block_4:
-   /* preds: block_3
-   vec1 ssa_11 = fmov -ssa_715.yyzw
-   /* succs: block_5
-   loop {
-      block block_5:
-      /* preds: block_4 block_8
-      vec1 ssa_699 = phi block_4: ssa_686, block_8: ssa_57
-      vec1 ssa_228 = phi block_4: ssa_11, block_8: ssa_76
-      vec1 ssa_15 = flt ssa_715.yyzw, ssa_228.xxxx
-      /* succs: block_6 block_7
-      if ssa_15 {
-         block block_6:
-         /* preds: block_5
-         break
-         /* succs: block_9
-      } else {
-         block block_7:
-         /* preds: block_5
-         /* succs: block_8
-      }
-      block block_8:
-      /* preds: block_7
-
-      vec1 ssa_76 = fadd ssa_228.xxxx, ssa_210.xxxx
-      /* succs: block_5
-   }
- */
