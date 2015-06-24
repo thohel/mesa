@@ -164,6 +164,8 @@ typedef struct {
    struct list_head invariant_link;
    struct list_head induction_link;
    boolean in_loop;
+   boolean in_conditional_block; // XXX: Not yet used
+   boolean in_nested_loop;       // XXX: Not yet used
 } loop_variable;
 
 typedef struct {
@@ -207,19 +209,57 @@ nir_foreach_block_in_cf_node(nir_cf_node *node, nir_foreach_block_cb cb,
    return foreach_cf_node(node, cb, false, state);
 }
 
-static bool
-nir_cf_node_contains(nir_cf_node *container, nir_cf_node *content)
-{
-   if (foreach_cf_node(container, does_cf_node_match, false, content))
-      return true;
 
-   return false;
+
+
+
+
+static inline bool
+foreach_if(nir_if *if_stmt, nir_foreach_block_cb cb, bool reverse, void *state)
+{
+   if (reverse) {
+      foreach_list_typed_safe_reverse(nir_cf_node, node, node,
+                                      &if_stmt->else_list) {
+         if (!foreach_cf_node(node, cb, reverse, state))
+            return false;
+      }
+
+      foreach_list_typed_safe_reverse(nir_cf_node, node, node,
+                                      &if_stmt->then_list) {
+         if (!foreach_cf_node(node, cb, reverse, state))
+            return false;
+      }
+   } else {
+      foreach_list_typed_safe(nir_cf_node, node, node, &if_stmt->then_list) {
+         if (!foreach_cf_node(node, cb, reverse, state))
+            return false;
+      }
+
+      foreach_list_typed_safe(nir_cf_node, node, node, &if_stmt->else_list) {
+         if (!foreach_cf_node(node, cb, reverse, state))
+            return false;
+      }
+   }
+
+   return true;
 }
 
-static bool
-does_cf_node_match(nir_cf_node *a, nir_cf_node *b)
+static inline bool
+foreach_loop(nir_loop *loop, nir_foreach_block_cb cb, bool reverse, void *state)
 {
-   return a == b;
+   if (reverse) {
+      foreach_list_typed_safe_reverse(nir_cf_node, node, node, &loop->body) {
+         if (!foreach_cf_node(node, cb, reverse, state))
+            return false;
+      }
+   } else {
+      foreach_list_typed_safe(nir_cf_node, node, node, &loop->body) {
+         if (!foreach_cf_node(node, cb, reverse, state))
+            return false;
+      }
+   }
+
+   return true;
 }
 
 /*
@@ -235,7 +275,99 @@ get_loop_var(nir_ssa_def *value, nir_loop_info_state *state)
 static inline void
 add_ssa_def_to_process_list(nir_ssa_def *def, nir_loop_info_state *state)
 {
-   // XXX: This should skip adding undefined values to the list as we will never try to process them
+   loop_variable *var = get_loop_var(def, state);
+   LIST_ADD(var->process_link, state->process_list);
+}
+
+
+static inline void
+add_ssa_defs_in_block_to_process_list(nir_block *block, nir_loop_info_state *state)
+{
+   nir_foreach_instr(block, instr)
+      nir_foreach_ssa_def(instr, add_ssa_def_to_process_list, state);
+}
+
+mark_block_as_in_conditional_block(nir_block *block, nir_loop_info_state *state)
+{
+   nir_foreach_instr(block, instr)
+      nir_foreach_ssa_def(instr, mark_ssa_def_as_in_conditional_block, state);
+}
+
+mark_block_as_nested(nir_block *block, nir_loop_info_state *state)
+{
+   nir_foreach_instr(block, instr)
+      nir_foreach_ssa_def(instr, mark_ssa_def_as_nested, state);
+}
+
+static void
+mark_ssa_def_as_in_loop(nir_ssa_def *def, nir_loop_info_state *state)
+{
+   loop_variable *var = get_loop_var(def, state);
+   var->in_loop = true;
+}
+
+static void
+mark_ssa_def_as_nested(nir_ssa_def *def, nir_loop_info_state *state)
+{
+   loop_variable *var = get_loop_var(def, state);
+   var->in_nested_loop = true;
+
+}
+
+static void
+mark_ssa_def_as_in_conditional_block(nir_ssa_def *def, nir_loop_info_state *state)
+{
+   loop_variable *var = get_loop_var(def, state);
+   var->in_conditional_block = true;
+
+}
+
+static void
+initialize_loop(nir_loop *loop, nir_loop_info_state *state)
+{
+   foreach_list_typed_safe(nir_cf_node, node, node, &loop->body) {
+      switch (node->type) {
+      case nir_cf_node_block:
+         nir_foreach_instr(nir_cf_node_as_block(node), instr) {
+            nir_foreach_ssa_def(instr, add_ssa_def_to_process_list, state);
+            nir_foreach_ssa_def(instr, mark_ssa_def_as_in_loop, state);
+         }
+         break;
+      case nir_cf_node_if:
+         nir_foreach_block_in_cf_node(node, mark_block_as_in_conditional_block, false, state);
+         break;
+      case nir_cf_node_loop:
+         nir_foreach_block_in_cf_node(node, mark_block_as_nested, false, state);
+         break;
+      }
+   }
+}
+
+/*
+static bool
+nir_cf_node_contains(nir_cf_node *container, nir_cf_node *content)
+{
+   if (foreach_cf_node(container, does_cf_node_match, false, content))
+      return true;
+
+   return false;
+}
+
+static bool
+does_cf_node_match(nir_cf_node *a, nir_cf_node *b)
+{
+   return a == b;
+}
+
+*/
+
+
+
+
+/*
+static inline void
+add_ssa_def_to_process_list(nir_ssa_def *def, nir_loop_info_state *state)
+{
    loop_variable *var = get_loop_var(def, state);
    LIST_ADD(var->process_link, state->process_list);
 }
@@ -253,9 +385,15 @@ foreach_block_in_loop_outer_layer(nir_loop *loop, nir_foreach_block_cb cb, void 
    foreach_list_typed_safe(nir_cf_node, node, node, &loop->body) {
       if (node->type == nir_cf_node_block)
          cb(nir_cf_node_as_block(node), state);
+      if (node->type == nir_cf_node_if)
+
+         if (node->type == nir_cf_node_loop)
    }
 }
 
+static inline void
+mark_nested_or_
+*/
 static inline bool
 is_ssa_def_invariant(loop_variable *var, nir_loop_info_state *state)
 {
@@ -354,6 +492,10 @@ compute_invariance_information(nir_loop_info_state *state)
    do {
       changes = false;
       LIST_FOR_EACH_ENTRY(var, state->process_list, info->process_link) {
+
+         if (var->in_conditional_block || var->in_nested_loop)
+            continue;
+
          if (is_ssa_def_invariant(var, state)) {
             LIST_ADD(var->invariant_link, state->info->invariant_list);
             LIST_DEL(var->process_link);
@@ -431,6 +573,11 @@ is_var_basic_induction_var(loop_variable *var, nir_loop_info_state *state)
 
    nir_foreach_phi_src(phi, src) {
       loop_variable *src_var = get_loop_var(src->src.ssa, state);
+
+      // If one of the sources is in a conditional or nested then panick
+      if (src_var->in_conditional_block || src_var->in_nested_loop)
+         return false;
+
       if (src_var->in_loop == false)
          phi_src_outside_loop = true;
 
@@ -581,9 +728,10 @@ compute_induction_information(nir_loop_info_state *state)
          /*
           * It can't be an induction variable if it is invariant,
           * so there is no point in checking. Remove it from the list
-          * so we avoid checking it again.
+          * so we avoid checking it again. Also we don't want to deal
+          * with things in nested loops or conditionals.
           */
-         if (var->info->type == invariant) {
+         if (var->info->type == invariant || var->in_conditional_block || var->in_nested_loop) {
             LIST_DEL(var->process_link);
             continue;
          }
@@ -622,6 +770,8 @@ compute_induction_information(nir_loop_info_state *state)
    } while (changes);
 }
 
+
+
 static void
 mark_ssa_def_as_in_loop(nir_ssa_def *def, nir_loop_info_state *state)
 {
@@ -632,7 +782,7 @@ mark_ssa_def_as_in_loop(nir_ssa_def *def, nir_loop_info_state *state)
 static void
 mark_block_as_in_loop(nir_block *block, nir_loop_info_state *state)
 {
-   nir_foreach_instr(block, instr)
+   nir_foreach_instr(block, instr) {
       nir_foreach_ssa_def(instr, mark_ssa_def_as_in_loop, state);
 }
 
@@ -814,6 +964,8 @@ nir_loop_analyze_impl(nir_function_impl *impl)
     * inside two loops, and therefore will get loop depth 3.
     * If we traverse the list backwards we will be getting the loops
     * in order, and so
+    *
+    * Can also use nearest_loop to get loop depth and parent loop.
     *
     *
     *
