@@ -29,7 +29,7 @@
  * basic induction variable:
  *    i = i + c
  *    i = i - c
- *    i = i * c
+ *    i = i * c        XXX: Need to figure out if this is actually legal
  *    i = i / c
  *    where c is loop invariant or constant
  *    defined only once in a loop
@@ -55,25 +55,22 @@
  *
  * If one of the operands is an induction variable
  * Can not be loop invariant.
- * Can be used as some king of test / validation
- *
- * We can run whole-shader analysis or analyze per-loop on request.
- * Do we want to imlement both? Or do we only want to run whole-shader?
- * Things like nest-depth will be hard to do if doing per-loop.
- *    (We can do it offcourse, just need to have the shader and check the loops)
- *
+ * Can be used as some kind of test / validation
  *
  * We need to check the conditional of any
  * diverging control flow inside the loop. If the conditional is invariant
  * then we can add the defs in the then and else branch to the list of
  * functions that we want to analyze. This can, in practice, be done by
  * checking each instruction we set to invariant if it is a condition
- * for a conditional or not. I'm not actually sure though if this is
- * necessary. It is freakin' hard to find good papers on how to find
- * loop invariants, and what to mark.
+ * for a conditional or not.
  *
- * For the time being I see no reason why this shouldn't work.
- * I'll need to play around with it some though, both in my head and code.
+ * I'm not actually sure though if this is necessary.
+ * If we implement loop unswitching we will split the loop in two,
+ * and so this is not relevant at all.
+ *
+ * It is freakin' hard to find understandable but good papers on how to find
+ * loop invariants and induction variables in SSA.
+ *
  */
 
 /* -
@@ -209,59 +206,6 @@ nir_foreach_block_in_cf_node(nir_cf_node *node, nir_foreach_block_cb cb,
    return foreach_cf_node(node, cb, false, state);
 }
 
-
-
-
-
-
-static inline bool
-foreach_if(nir_if *if_stmt, nir_foreach_block_cb cb, bool reverse, void *state)
-{
-   if (reverse) {
-      foreach_list_typed_safe_reverse(nir_cf_node, node, node,
-                                      &if_stmt->else_list) {
-         if (!foreach_cf_node(node, cb, reverse, state))
-            return false;
-      }
-
-      foreach_list_typed_safe_reverse(nir_cf_node, node, node,
-                                      &if_stmt->then_list) {
-         if (!foreach_cf_node(node, cb, reverse, state))
-            return false;
-      }
-   } else {
-      foreach_list_typed_safe(nir_cf_node, node, node, &if_stmt->then_list) {
-         if (!foreach_cf_node(node, cb, reverse, state))
-            return false;
-      }
-
-      foreach_list_typed_safe(nir_cf_node, node, node, &if_stmt->else_list) {
-         if (!foreach_cf_node(node, cb, reverse, state))
-            return false;
-      }
-   }
-
-   return true;
-}
-
-static inline bool
-foreach_loop(nir_loop *loop, nir_foreach_block_cb cb, bool reverse, void *state)
-{
-   if (reverse) {
-      foreach_list_typed_safe_reverse(nir_cf_node, node, node, &loop->body) {
-         if (!foreach_cf_node(node, cb, reverse, state))
-            return false;
-      }
-   } else {
-      foreach_list_typed_safe(nir_cf_node, node, node, &loop->body) {
-         if (!foreach_cf_node(node, cb, reverse, state))
-            return false;
-      }
-   }
-
-   return true;
-}
-
 /*
  * Gets the loop entry for the given ssa def
  */
@@ -278,7 +222,6 @@ add_ssa_def_to_process_list(nir_ssa_def *def, nir_loop_info_state *state)
    loop_variable *var = get_loop_var(def, state);
    LIST_ADD(var->process_link, state->process_list);
 }
-
 
 static inline void
 add_ssa_defs_in_block_to_process_list(nir_block *block, nir_loop_info_state *state)
@@ -343,57 +286,6 @@ initialize_loop(nir_loop_info_state *state)
    }
 }
 
-/*
-static bool
-nir_cf_node_contains(nir_cf_node *container, nir_cf_node *content)
-{
-   if (foreach_cf_node(container, does_cf_node_match, false, content))
-      return true;
-
-   return false;
-}
-
-static bool
-does_cf_node_match(nir_cf_node *a, nir_cf_node *b)
-{
-   return a == b;
-}
-
-*/
-
-
-
-
-/*
-static inline void
-add_ssa_def_to_process_list(nir_ssa_def *def, nir_loop_info_state *state)
-{
-   loop_variable *var = get_loop_var(def, state);
-   LIST_ADD(var->process_link, state->process_list);
-}
-
-static inline void
-add_ssa_defs_in_block_to_process_list(nir_block *block, nir_loop_info_state *state)
-{
-   nir_foreach_instr(block, instr)
-      nir_foreach_ssa_def(instr, add_ssa_def_to_process_list, state);
-}
-
-static inline void
-foreach_block_in_loop_outer_layer(nir_loop *loop, nir_foreach_block_cb cb, void *state)
-{
-   foreach_list_typed_safe(nir_cf_node, node, node, &loop->body) {
-      if (node->type == nir_cf_node_block)
-         cb(nir_cf_node_as_block(node), state);
-      if (node->type == nir_cf_node_if)
-
-         if (node->type == nir_cf_node_loop)
-   }
-}
-
-static inline void
-mark_nested_or_
-*/
 static inline bool
 is_ssa_def_invariant(loop_variable *var, nir_loop_info_state *state)
 {
@@ -777,8 +669,6 @@ compute_induction_information(nir_loop_info_state *state)
    } while (changes);
 }
 
-
-
 static void
 mark_ssa_def_as_in_loop(nir_ssa_def *def, nir_loop_info_state *state)
 {
@@ -853,7 +743,7 @@ get_loop_info(nir_loop_info_state *state, nir_function_impl *impl)
 }
 
 /*
- * Gets info for a signle loop
+ * Gets info for a single loop
  */
 static nir_loop_info
 nir_get_loop_info(nir_function_impl *impl, nir_loop *loop)
@@ -869,15 +759,14 @@ nir_get_loop_info(nir_function_impl *impl, nir_loop *loop)
    */
    loop_variable *all_vars;
    state->all_vars = all_vars;
-   all_vars = rzalloc_array(mem_ctx, struct loop_variable,
-                                 impl.ssa_alloc);
+   all_vars = rzalloc_array(mem_ctx, struct loop_variable, impl.ssa_alloc);
 
-   // A list of the loop_vars in the loop
+   /* A list of the loop_vars in the loop XXX: This is not used as is. Might be interesting? */
    struct list_head loop_vars;
    LIST_INITHEAD(loop_vars);
    state->loop_vars = loop_vars;
 
-   // A list of the loop_vars to process
+   /* A list of the loop_vars to process */
    struct list_head process_list;
    LIST_INITHEAD(process_list);
    state->process_list = process_list;
@@ -886,6 +775,13 @@ nir_get_loop_info(nir_function_impl *impl, nir_loop *loop)
    return state.info;
 }
 
+
+/*
+ * XXX: This does a lot of list traversal after the initial collection
+ * of loops from the blocks. However, this is probably not an issue as
+ * we don't expect to see a lot of loops in our shaders, and so this is
+ * not really a dominant part of this pass's cpu-time.
+ */
 static nir_loop_info_state
 get_loops_ordered(nir_function_impl *impl, void *mem_ctx)
 {
@@ -909,6 +805,9 @@ get_loops_ordered(nir_function_impl *impl, void *mem_ctx)
    if (!loop_found)
       return NULL;
 
+   /*
+    * Collect information about which loops have another loop as its parent
+    */
    nir_loop_info_state *state;
    nir_cf_node *node;
    list_for_each_entry_safe(nir_loop_info_state, state, head, head->loop_states_link) {
@@ -921,23 +820,23 @@ get_loops_ordered(nir_function_impl *impl, void *mem_ctx)
       }
    }
 
+   /*
+    * Calculate the nesting depth of all loops based
+    * on the information we gathered about the loops' parents
+    */
    list_for_each_entry_safe(nir_loop_info_state, state, head, head->loop_states_link) {
-      /*
-       * state_copy = state;
-       *
-       * Run a while loop to collect loop depth.
-       * int i = 1;
-       * while (!nir_cf_node_is_first(state_copy->info->parent)) {
-       *    state_copy = state_copy->info->parent;
-       *    i++;
-       * }
-       * state_copy.nest_depth = i;
-       *
-       */
+      nir_loop_info_state *copy_state = state;
+      int i = 1;
+      /* If we have a parent then iterate depth, and "recurse" */
+      while (copy_state->info->parent_loop != NULL) {
+         copy_state = copy_state->info->parent_loop;
+         i++;
+      }
+      state->info->nest_depth = i;
    }
 
    /*
-    * Since we now have the loop depth it is now trivial to sort the list
+    * Since we now have the loop depth it is trivial to sort the list
     * according to the loop depth. This will let us get the list ordered
     * from innermost to outermost loop.
     */
