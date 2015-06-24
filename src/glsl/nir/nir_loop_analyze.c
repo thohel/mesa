@@ -323,9 +323,9 @@ mark_ssa_def_as_in_conditional_block(nir_ssa_def *def, nir_loop_info_state *stat
 }
 
 static void
-initialize_loop(nir_loop *loop, nir_loop_info_state *state)
+initialize_loop(nir_loop_info_state *state)
 {
-   foreach_list_typed_safe(nir_cf_node, node, node, &loop->body) {
+   foreach_list_typed_safe(nir_cf_node, node, node, state->info->loop->body) {
       switch (node->type) {
       case nir_cf_node_block:
          nir_foreach_instr(nir_cf_node_as_block(node), instr) {
@@ -711,6 +711,13 @@ compute_induction_information(nir_loop_info_state *state)
    foreach_block_in_loop_outer_layer(state->info->loop,
                                      add_ssa_defs_in_block_to_process_list,
                                      state);
+
+   /*
+    * Add all entries in the outermost part of the loop to the processing list
+    * Mark the entries in conditionals or in nested loops accordingly.
+    */
+   initialize_loop(state);
+
    /*
     * Here we should probably also run through all instructions in the list
     * once to check if any of them are invariant conditionals for an if.
@@ -902,28 +909,51 @@ get_loops_ordered(nir_function_impl *impl, void *mem_ctx)
    if (!loop_found)
       return NULL;
 
-   /*
-    * Walk through the list and shuffle loops around until we get
-    * a list of loops where the deepest loops are first.
-    */
-   bool changed = true;
-   nir_loop_info_state *one;
-   nir_loop_info_state *two;
-   while (changed) {
-      list_for_each_entry_safe(nir_loop_info_state, one, head, head->loop_states_link) {
-         list_for_each_entry_from_safe(nir_loop_info_state, two, one, one->loop_states_link) {
-            if (nir_cf_node_contains(one, two)) {
-               /*
-                * The loop b was nested inside loop a
-                * Move loop b to the front of the list.
-                */
-               LIST_DEL(two);
-               LIST_ADD(two, head);
-               changed = true;
-            }
+   nir_loop_info_state *state;
+   nir_cf_node *node;
+   list_for_each_entry_safe(nir_loop_info_state, state, head, head->loop_states_link) {
+      node = state->info->loop->cf_node;
+      while (!nir_cf_node_is_first(node->parent)) {
+         if (node->type == nir_cf_node_loop) {
+            state->info->parent_loop = nir_cf_node_as_loop(node);
          }
+         node = node->parent;
       }
    }
+
+   list_for_each_entry_safe(nir_loop_info_state, state, head, head->loop_states_link) {
+      /*
+       * state_copy = state;
+       *
+       * Run a while loop to collect loop depth.
+       * int i = 1;
+       * while (!nir_cf_node_is_first(state_copy->info->parent)) {
+       *    state_copy = state_copy->info->parent;
+       *    i++;
+       * }
+       * state_copy.nest_depth = i;
+       *
+       */
+   }
+
+   /*
+    * Since we now have the loop depth it is now trivial to sort the list
+    * according to the loop depth. This will let us get the list ordered
+    * from innermost to outermost loop.
+    */
+   boolean changes;
+   do {
+      changes = false;
+      list_for_each_entry_safe(nir_loop_info_state, cur, head, head->loop_states_link) {
+         nir_loop_info_state *next = LIST_ENTRY(nir_loop_info_state, cur->loop_states_link.next, head);
+         if (cur->info->nest_depth < next->info->nest_depth) {
+            LIST_DEL(next);
+            LIST_ADD(next, head);
+            changes = true;
+         }
+      }
+   } while (changes);
+
    return head;
 }
 
@@ -961,7 +991,7 @@ nir_loop_analyze_impl(nir_function_impl *impl)
     *    - Rinse and repeat
     * This should give the correct loop depth for the loops,
     * as a loop-in-loop-in-loop will be iterated twice as it is
-    * inside two loops, and therefore will get loop depth 3.
+    * inside two loops, and thenir_loop *loop, refore will get loop depth 3.
     * If we traverse the list backwards we will be getting the loops
     * in order, and so
     *
