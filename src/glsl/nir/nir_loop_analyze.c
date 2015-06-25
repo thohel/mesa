@@ -373,8 +373,6 @@ compute_invariance_information(nir_loop_info_state *state)
                                      state);
 
    /*
-    * XXX: We might just say that "anything that does not have a phi is invariant" ?
-    *
     * An expression is invariant in a loop L iff:
     *  (base cases)
     *    – it’s a constant
@@ -391,7 +389,7 @@ compute_invariance_information(nir_loop_info_state *state)
 
    do {
       changes = false;
-      LIST_FOR_EACH_ENTRY(var, state->process_list, info->process_link) {
+      list_for_each_entry_safe(loop_variable, var, state->process_list, process_link) {
 
          if (var->in_conditional_block || var->in_nested_loop)
             continue;
@@ -630,8 +628,7 @@ compute_induction_information(nir_loop_info_state *state)
 
    do {
       changes = false;
-      LIST_FOR_EACH_ENTRY(var, state->process_list, info->process_link) {
-
+      list_for_each_entry_safe(loop_variable, var, state->process_list, process_link) {
          /*
           * It can't be an induction variable if it is invariant,
           * so there is no point in checking. Remove it from the list
@@ -747,7 +744,6 @@ get_loop_terminators(nir_loop_info_state *state)
       if (node->type == nir_cf_node_if) {
          if (is_loop_terminator(nir_cf_node_as_if(node))) {
             /*
-             * Add to list of loop terminators.
              * ralloc a nir_loop_terminator
              * Attach it to the list of terminators
              * Get the loop_var for the conditional and set it in the struct XXX: Might prove to be unnecessary
@@ -813,41 +809,6 @@ get_loop_info(nir_loop_info_state *state, nir_function_impl *impl)
     * that has the same amount of cases as the unroll-factor, a so called
     * "Duff's Device".
     */
-
-}
-
-/*
- * Gets info for a single loop
- */
-static nir_loop_info
-nir_get_loop_info(nir_function_impl *impl, nir_loop *loop)
-{
-   void *mem_ctx;
-
-   nir_loop_info info;
-   nir_loop_info_state state;
-   state->info = &info;
-
-  /* Set up an array of all ssa-values and corresponding loop
-   * information variables. This is used to hold useful information.
-   */
-   loop_variable *all_vars;
-   state->all_vars = all_vars;
-   all_vars = rzalloc_array(mem_ctx, struct loop_variable, impl.ssa_alloc);
-
-   /* A list of the loop_vars in the loop XXX: This is not used as is. Might be interesting? */
-   struct list_head loop_vars;
-   LIST_INITHEAD(loop_vars);
-   state->loop_vars = loop_vars;
-
-   /* A list of the loop_vars to process */
-   struct list_head process_list;
-   LIST_INITHEAD(process_list);
-   state->process_list = process_list;
-
-   get_loop_info(state, impl);
-
-   return state.info;
 }
 
 static nir_loop_info_state *
@@ -942,7 +903,7 @@ get_loops_ordered(nir_function_impl *impl, void *mem_ctx)
    do {
       changes = false;
       list_for_each_entry_safe(nir_loop_info_state, cur, head, loop_states_link) {
-         nir_loop_info_state *next = LIST_ENTRY(struct nir_loop_info_state, cur->loop_states_link.next, head);
+         nir_loop_info_state *next = LIST_ENTRY(nir_loop_info_state, cur->loop_states_link.next, loop_states_link); // XXX: This use of the list getter is porbably wrong on so many levels.
          if (cur->info->nest_depth < next->info->nest_depth) {
             LIST_DEL(next);
             LIST_ADD(next, head);
@@ -996,11 +957,11 @@ nir_loop_analyze_impl(nir_function_impl *impl)
     */
 
    nir_loop_info_state *loop_state;
-   list_for_each_entry(struct nir_loop_info_state, loop_state, state->loop_states, link) {
+   list_for_each_entry(nir_loop_info_state, loop_state, state.loop_states, loop_states_link) {
       get_loop_info(loop_state, impl);
    }
 
-   return state.progress;
+   return true;;
 }
 
 /*
@@ -1022,12 +983,12 @@ nir_loop_analyze(nir_shader *shader)
    return progress;
 }
 
-
+/*
 ir_rvalue *
 get_basic_induction_increment(ir_assignment *ir, hash_table *var_hash)
 {
    /* The RHS must be a binary expression.
-    */
+    *
    ir_expression *const rhs = ir->rhs->as_expression();
    if ((rhs == NULL)
        || ((rhs->operation != ir_binop_add)
@@ -1037,7 +998,7 @@ get_basic_induction_increment(ir_assignment *ir, hash_table *var_hash)
    /* One of the of operands of the expression must be the variable assigned.
     * If the operation is subtraction, the variable in question must be the
     * "left" operand.
-    */
+    *
    ir_variable *const var = ir->lhs->variable_referenced();
 
    ir_variable *const op0 = rhs->operands[0]->variable_referenced();
@@ -1075,3 +1036,4 @@ get_basic_induction_increment(ir_assignment *ir, hash_table *var_hash)
    return inc;
 }
 
+*/
