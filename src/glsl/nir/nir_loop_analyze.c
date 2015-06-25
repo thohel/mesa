@@ -1,7 +1,5 @@
 /*
- * Copyright © 2014 Intel Corporation
- *
- * XXX: Need to fix the copyright header
+ * Copyright © 2015 Thomas Helland (for Google's Summer of Code)
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the "Software"),
@@ -23,8 +21,6 @@
  * IN THE SOFTWARE.
  */
 
-
-
 /*
  * basic induction variable:
  *    i = i + c
@@ -44,36 +40,32 @@
  *    i is basic induction variable
  *
  *    triple(i, c1, c2) where i = basic induction variable, c1 and c2 invariant.
- *    ^^ XXX: This has not been explored, but may proce usefull.
+ *    ^^ XXX: This has not been explored, but may prove usefull.
  *
  * Family of induction variable B is the set of induction
  * variables A that are a linear function of B
  *
- * This algorithm is kinda slow as it retries all the variables
- * upon each run of the pass. That's not cool. Could make it demand driven
- * and use a worklist similar to the way done in SCCP.
+ * This implementation is kinda slow as it retries all variables in the loop
+ * each time it has progressed (for invariant and induction detection).
+ * Could make it demand driven and use a worklist. However, the process
+ * of getting the users of each ssa-def might prove to be just as expensive as
+ * the few extra variables checked, as there are usually few instructions in
+ * the loops we encounter. Therefore the KISS method has been chosen as for now.
  *
  * If one of the operands is an induction variable
- * Can not be loop invariant.
- * Can be used as some kind of test / validation
+ *   --> Can not be loop invariant.
+ * Can be used as a validation after the pass has run.
  *
- * We need to check the conditional of any
- * diverging control flow inside the loop. If the conditional is invariant
- * then we can add the defs in the then and else branch to the list of
- * functions that we want to analyze. This can, in practice, be done by
- * checking each instruction we set to invariant if it is a condition
- * for a conditional or not.
- *
- * I'm not actually sure though if this is necessary.
- * If we implement loop unswitching we will split the loop in two,
- * and so this is not relevant at all.
- *
- * It is freakin' hard to find understandable but good papers on how to find
- * loop invariants and induction variables in SSA.
- *
+ * We can check the conditional of any diverging control flow in the loop.
+ * If the conditional is invariant then we can add the defs in the
+ * then and else branch to the list of defs to analyze.
+ * This can, in practice, be done by checking each def we set to invariant
+ * if it is a condition for an if.
+ * This may be unnecessary if we implement loop unswitching.
+ * Then we will split the loop in two and remove the conditional in the loop.
  */
 
-/* -
+/*
  * Example of loop in NIR-ssa
  *
  * block block_4:
@@ -110,15 +102,19 @@
 #include "util/list.h"
 
 typedef enum {
-   unprocessed,
    undefined,
    invariant,
    basic_induction,
-   derived_induction
+   derived_induction,
+   canonical_induction // XXX: This may not be wanted? Not used as of yet
 } nir_loop_variable_type;
 
+/*
+ * XXX: This whole struct may actually be dropped, but it may prove useful
+ * to have easy access to the ssa-def it represents.
+ */
 typedef struct {
-   /* The ssa_def assosiated with this info */
+   /* The ssa_def associated with this info */
    nir_ssa_def *def;
 
    /* The type of this ssa_def */
@@ -131,9 +127,14 @@ typedef struct {
 
    /* Array of info's for each def in loop
     * XXX: We probably want to change to a list.
+    * We should figure out if we actually want to keep this or if
+    * we want to store something else like the whole loop-variable.
+    * Or maybe we want to split some of that info into the ssa-def-info
+    * and have some in the loop-variable. The thought is to have an info-struct
+    * that holds the "public" information, and a struct wrapping it that is used
+    * in the analysis and holds the information only this pass cares about.
     */
    nir_loop_ssa_def_info *def_infos;
-
    /* XXX: Might not be needed if we go the list-way */
    uint32_t num_ssa_defs_in_loop;
 
@@ -182,8 +183,8 @@ typedef struct {
    /*
     * A list of the loop_vars in the loop
     * XXX: This is not used as of now and can probably be dropped.
-    * It depends on how user friendly we want the information we send back to be
     * We already have the list of induction variables, so might be "double info".
+    * Should at least be moved into nir_loop_info
     */
    struct list_head loop_vars;
 
@@ -196,8 +197,7 @@ typedef struct {
 typedef struct {
    void *mem_ctx;
    nir_function_impl *impl;
-   uint32_t number_of_loops;
-   uint32_t max_nesting_depth;
+   uint32_t max_nesting_depth;    // XXX: This is not used either
 
    // A list of the loops in the function
    struct list_head loop_states;
@@ -850,6 +850,28 @@ nir_get_loop_info(nir_function_impl *impl, nir_loop *loop)
    return state.info;
 }
 
+static nir_loop_info_state *
+initialize_loop_info_state(nir_loop *loop, void *mem_ctx, nir_function_impl *impl)
+{
+   nir_loop_info *info;
+   nir_loop_info_state *state;
+   loop_variable *loop_vars;
+   nir_loop_ssa_def_info *ssa_infos;
+   info = ralloc(mem_ctx, struct nir_loop_info);
+   state = ralloc(mem_ctx, struct nir_loop_info_state);
+   loop_vars = rzalloc_array(mem_ctx, struct loop_variable, impl->ssa_alloc);
+   ssa_infos = rzalloc_array(mem_ctx, struct nir_loop_ssa_def_info, impl->ssa_alloc);
+   state->loop_vars = loop_vars;
+   state->info = info;
+   state->info->def_infos = ssa_infos;
+
+   for (int i = 0; i < impl->ssa_alloc; i++)
+      loop_vars[i].info = ssa_infos[i];
+
+   LIST_INITHEAD(state->process_list);
+
+   return state;
+}
 
 /*
  * XXX: This does a lot of list traversal after the initial collection
@@ -857,10 +879,11 @@ nir_get_loop_info(nir_function_impl *impl, nir_loop *loop)
  * we don't expect to see a lot of loops in our shaders, and so this is
  * not really a dominant part of this pass's cpu-time.
  */
-static nir_loop_info_state
+static struct list_head *
 get_loops_ordered(nir_function_impl *impl, void *mem_ctx)
 {
-   nir_loop_info_state *head = ralloc(mem_ctx, struct nir_loop_info_state);
+   //nir_loop_info_state *head = ralloc(mem_ctx, struct nir_loop_info_state);
+   struct list_head *head;
    LIST_INITHEAD(head);
 
    bool loop_found = false;
@@ -870,7 +893,7 @@ get_loops_ordered(nir_function_impl *impl, void *mem_ctx)
    foreach_list_typed(nir_cf_node, cur, node, impl->body) {
       if (cur->type == nir_cf_node_loop) {
          nir_loop *loop = nir_cf_node_as_loop(cur);
-         nir_loop_info_state *loop_state = ralloc(mem_ctx, struct nir_loop_info_state);
+         nir_loop_info_state *loop_state = initialize_loop_info_state(loop, mem_ctx, impl);
          loop_state->info->loop = loop;
          LIST_ADD(loop_state->loop_states_link, head);
          loop_found = true;
@@ -885,7 +908,7 @@ get_loops_ordered(nir_function_impl *impl, void *mem_ctx)
     */
    nir_loop_info_state *state;
    nir_cf_node *node;
-   list_for_each_entry_safe(nir_loop_info_state, state, head, head->loop_states_link) {
+   list_for_each_entry_safe(nir_loop_info_state, state, head, loop_states_link) {
       node = state->info->loop->cf_node;
       while (!nir_cf_node_is_first(node->parent)) {
          if (node->type == nir_cf_node_loop) {
@@ -899,7 +922,7 @@ get_loops_ordered(nir_function_impl *impl, void *mem_ctx)
     * Calculate the nesting depth of all loops based
     * on the information we gathered about the loops' parents
     */
-   list_for_each_entry_safe(nir_loop_info_state, state, head, head->loop_states_link) {
+   list_for_each_entry_safe(nir_loop_info_state, state, head, loop_states_link) {
       nir_loop_info_state *copy_state = state;
       int i = 1;
       /* If we have a parent then iterate depth, and "recurse" */
@@ -918,8 +941,8 @@ get_loops_ordered(nir_function_impl *impl, void *mem_ctx)
    boolean changes;
    do {
       changes = false;
-      list_for_each_entry_safe(nir_loop_info_state, cur, head, head->loop_states_link) {
-         nir_loop_info_state *next = LIST_ENTRY(nir_loop_info_state, cur->loop_states_link.next, head);
+      list_for_each_entry_safe(nir_loop_info_state, cur, head, loop_states_link) {
+         nir_loop_info_state *next = LIST_ENTRY(struct nir_loop_info_state, cur->loop_states_link.next, head);
          if (cur->info->nest_depth < next->info->nest_depth) {
             LIST_DEL(next);
             LIST_ADD(next, head);
@@ -934,6 +957,7 @@ get_loops_ordered(nir_function_impl *impl, void *mem_ctx)
 /*
  * Gets loop info for all loops in a nir_function_impl
  */
+bool
 nir_loop_analyze_impl(nir_function_impl *impl)
 {
    nir_loop_info_pass_state state;
@@ -947,40 +971,8 @@ nir_loop_analyze_impl(nir_function_impl *impl)
     * that first afterwards.
     */
    state.loop_states = get_loops_ordered(impl, state.mem_ctx);
-
-   /*
-    * To find loop depth
-    * - Start at the beginning of the list (deepest loops)
-    * - Check if this is contained within another loop.
-    * - If it is, check if that loop is contained in another loop.
-    * - Have an iterator that is incremented until we reach the outer layer
-    *      where the loop is no longer contained within another one.
-    * - Do this for all loop-alternatives
-    * - Choose the maximum as this loops nest depth.
-    *
-    * To find loop depth:
-    *    - Take one loop of list.
-    *    - If any of the other loops in the list are in this loop
-    *       - Increment it's loop-depth.
-    *    - Rinse and repeat
-    * This should give the correct loop depth for the loops,
-    * as a loop-in-loop-in-loop will be iterated twice as it is
-    * inside two loops, and thenir_loop *loop, refore will get loop depth 3.
-    * If we traverse the list backwards we will be getting the loops
-    * in order, and so
-    *
-    * Can also use nearest_loop to get loop depth and parent loop.
-    *
-    *
-    *
-    * Recursive method for detecting loop depth:
-    *    - Start at the outermost loop.
-    *    - For each cf node
-    *       - if loop
-    *          - iterate depth counter
-    *          - set this loop as found loop's parent
-    *          - run the procedure on found loop.
-    */
+   if (!state.loop_states)
+      return false;
 
    /*
     * Method for getting LCSSA:
@@ -1017,6 +1009,7 @@ nir_loop_analyze_impl(nir_function_impl *impl)
  * Might want it to be a utility instead of saving stuff in the
  * metadata as we will be constantly invalidating the metadata during opt.
  */
+bool
 nir_loop_analyze(nir_shader *shader)
 {
    bool progress = false;
@@ -1028,9 +1021,6 @@ nir_loop_analyze(nir_shader *shader)
 
    return progress;
 }
-
-
-
 
 
 ir_rvalue *
