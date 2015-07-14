@@ -25,7 +25,7 @@
  */
 
 #include "nir.h"
-#include "nir_worklist.h"
+#include "nir_block_worklist.h"
 #include "nir_vla.h"
 
 /*
