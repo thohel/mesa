@@ -41,6 +41,8 @@ nir_metadata_require(nir_function_impl *impl, nir_metadata required)
       nir_calc_dominance_impl(impl);
    if (NEEDS_UPDATE(nir_metadata_live_ssa_defs))
       nir_live_ssa_defs_impl(impl);
+   if (NEEDS_UPDATE(nir_metadata_loop_analysis))
+      nir_loop_analyze_impl(impl);
 
 #undef NEEDS_UPDATE
 

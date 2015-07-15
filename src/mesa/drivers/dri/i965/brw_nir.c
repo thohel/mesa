@@ -424,6 +424,8 @@ nir_optimize(nir_shader *nir, bool is_scalar)
       OPT(nir_opt_undef);
    } while (progress);
 
+   OPT(nir_opt_loop_unroll);
+
    return nir;
 }
 
