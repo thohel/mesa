@@ -70,7 +70,6 @@ struct nir_function;
 struct nir_shader;
 struct nir_instr;
 
-
 /**
  * Description of built-in state associated with a uniform
  *
@@ -1272,10 +1271,78 @@ nir_if_last_else_node(nir_if *if_stmt)
    return exec_node_data(nir_cf_node, tail, node);
 }
 
+typedef enum {
+   undefined,
+   invariant,
+   basic_induction
+} nir_loop_variable_type;
+
+typedef struct {
+   /* The ssa_def associated with this info */
+   nir_ssa_def *def;
+
+   /* The type of this ssa_def */
+   nir_loop_variable_type type;
+
+   /* Link to the loop_variable list for the loop */
+   struct list_head loop_vars_link;
+
+   /* A link for a list of invariant variables */
+   struct list_head invariant_link;
+
+   /* A link for a list of induction variables */
+   struct list_head induction_link;
+
+   /* If the ssa-def is constant */
+   bool is_constant;
+
+   bool in_conditional_block;
+
+   bool in_nested_loop;
+} nir_loop_variable;
+
+typedef struct {
+   nir_op alu_op;                                /* The type of alu-operation    */
+   nir_loop_variable *alu_def;                   /* The def of the alu-operation */
+   nir_loop_variable *invariant;                 /* The invariant alu-operand    */
+   nir_loop_variable *phi;                       /* The other alu-operand        */
+   nir_loop_variable *def_outside_loop;          /* The phi-src outside the loop */
+} nir_basic_induction_var;
+
+typedef struct {
+   nir_if *nif;
+
+   /* Some more suitable fields like maybe indicated trip-count? */
+   nir_instr *conditional_instr;
+
+   struct list_head loop_terminator_link;
+} nir_loop_terminator;
+
+typedef struct {
+   /* Loop_variable for all ssa_defs in loop */
+   struct list_head loop_vars_list;
+
+   /* How many times the loop is run (if known) */
+   uint32_t trip_count;
+   bool is_trip_count_known;
+
+   nir_loop_terminator *limiting_terminator;
+
+   /* A list of loop_terminators terminating this loop XXX: These (apart from the limiting terminator) can be dead-code-eliminated */
+   struct list_head loop_terminator_list;
+
+   /* The ssa_defs that are invariant */
+   struct list_head invariant_list;
+
+   struct hash_table *var_to_basic_ind;
+} nir_loop_info;
+
 typedef struct {
    nir_cf_node cf_node;
 
    struct exec_list body; /** < list of nir_cf_node */
+
+   nir_loop_info *info;
 } nir_loop;
 
 static inline nir_cf_node *
@@ -1299,6 +1366,7 @@ typedef enum {
    nir_metadata_block_index = 0x1,
    nir_metadata_dominance = 0x2,
    nir_metadata_live_variables = 0x4,
+   nir_metadata_loop_analysis = 0x5,
 } nir_metadata;
 
 typedef struct {
@@ -1428,6 +1496,8 @@ typedef struct nir_shader_compiler_options {
     * are simulated by floats.)
     */
    bool native_integers;
+
+   uint32_t max_loop_instructions;
 } nir_shader_compiler_options;
 
 typedef struct nir_shader {
@@ -1677,6 +1747,9 @@ void nir_lower_to_source_mods(nir_shader *shader);
 void nir_normalize_cubemap_coords(nir_shader *shader);
 
 void nir_live_variables_impl(nir_function_impl *impl);
+void nir_loop_analyze_impl(nir_function_impl *impl);
+void nir_loop_analyze(nir_shader *shader);
+
 bool nir_ssa_defs_interfere(nir_ssa_def *a, nir_ssa_def *b);
 
 void nir_convert_to_ssa_impl(nir_function_impl *impl);
