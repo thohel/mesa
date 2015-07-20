@@ -62,6 +62,8 @@ nir_optimize(nir_shader *nir, bool is_scalar)
       nir_validate_shader(nir);
       progress |= nir_opt_remove_phis(nir);
       nir_validate_shader(nir);
+      progress |= nir_opt_loop_unroll(nir);
+      nir_validate_shader(nir);
    } while (progress);
 
    nir_validate_shader(nir);
