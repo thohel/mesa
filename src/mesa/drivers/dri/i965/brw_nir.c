@@ -422,9 +422,8 @@ nir_optimize(nir_shader *nir, bool is_scalar)
       OPT(nir_opt_dead_cf);
       OPT(nir_opt_remove_phis);
       OPT(nir_opt_undef);
+      OPT(nir_opt_loop_unroll);
    } while (progress);
-
-   OPT(nir_opt_loop_unroll);
 
    return nir;
 }
