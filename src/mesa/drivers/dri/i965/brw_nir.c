@@ -54,6 +54,13 @@ nir_optimize(nir_shader *nir)
       nir_validate_shader(nir);
       progress |= nir_opt_remove_phis(nir);
       nir_validate_shader(nir);
+      nir_form_LCSSA(nir);
+      nir_validate_shader(nir);
+      /* Loop optimizations start here */
+
+      /* Loop optimizations end here */
+      nir_opt_remove_phis(nir);
+      nir_validate_shader(nir);
    } while (progress);
 }
 
