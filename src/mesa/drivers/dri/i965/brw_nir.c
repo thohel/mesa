@@ -422,6 +422,11 @@ nir_optimize(nir_shader *nir, bool is_scalar)
       OPT(nir_opt_dead_cf);
       OPT(nir_opt_remove_phis);
       OPT(nir_opt_undef);
+      OPT(nir_form_LCSSA);
+      /* Loop optimizations start here */
+
+      /* Loop optimizations end here */
+      OPT(nir_opt_remove_phis);
    } while (progress);
 
    return nir;
