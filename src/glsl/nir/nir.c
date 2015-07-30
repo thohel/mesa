@@ -900,6 +900,14 @@ nir_cf_node_get_function(nir_cf_node *node)
    return nir_cf_node_as_function(node);
 }
 
+nir_shader *
+nir_cf_node_get_shader(nir_cf_node *node)
+{
+   nir_function_impl *impl = nir_cf_node_get_function(node);
+
+   return impl->overload->function->shader;
+}
+
 /*
  * update the CFG after a jump instruction has been added to the end of a block
  */

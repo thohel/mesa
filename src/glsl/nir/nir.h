@@ -1500,6 +1500,8 @@ nir_loop *nir_loop_create(void *mem_ctx);
 
 nir_function_impl *nir_cf_node_get_function(nir_cf_node *node);
 
+nir_shader *nir_cf_node_get_shader(nir_cf_node *node);
+
 /** puts a control flow node immediately after another control flow node */
 void nir_cf_node_insert_after(nir_cf_node *node, nir_cf_node *after);
 
