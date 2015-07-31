@@ -1771,7 +1771,7 @@ do_common_optimization(exec_list *ir, bool linked,
    loop_state *ls = analyze_loop_variables(ir);
    if (ls->loop_found) {
       progress = set_loop_controls(ir, ls) || progress;
-      progress = unroll_loops(ir, ls, options) || progress;
+//      progress = unroll_loops(ir, ls, options) || progress;
    }
    delete ls;
 
