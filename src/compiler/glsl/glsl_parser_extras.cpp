@@ -1910,7 +1910,7 @@ do_common_optimization(exec_list *ir, bool linked,
    else
       OPT(do_constant_variable_unlinked, ir);
    OPT(do_constant_folding, ir);
-   OPT(do_minmax_prune, ir);
+//   OPT(do_minmax_prune, ir);
    OPT(do_rebalance_tree, ir);
    OPT(do_algebraic, ir, native_integers, options);
    OPT(do_lower_jumps, ir);
