@@ -51,6 +51,7 @@ optimizations = [
    (('fneg', ('fneg', a)), a),
    (('ineg', ('ineg', a)), a),
    (('fabs', ('fabs', a)), ('fabs', a)),
+   (('fabs', ('fsat', a)), ('fsat', a)),
    (('fabs', ('fneg', a)), ('fabs', a)),
    (('iabs', ('iabs', a)), ('iabs', a)),
    (('iabs', ('ineg', a)), ('iabs', a)),
