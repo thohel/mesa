@@ -43,7 +43,6 @@ typedef struct {
 } loop_variable;
 
 typedef struct {
-
    /* The loop we store information for */
    nir_loop *loop;
 
@@ -72,9 +71,9 @@ get_nir_loop_var(nir_ssa_def *value, loop_info_state *state)
 }
 
 typedef struct {
-  loop_info_state *state;
-  bool mark_nested;
-  bool mark_in_conditional;
+   loop_info_state *state;
+   bool mark_nested;
+   bool mark_in_conditional;
 } init_loop_state;
 
 static bool
@@ -233,18 +232,11 @@ is_var_basic_induction_var(loop_variable *var, loop_info_state *state)
                nir_instr_as_alu(src_var->nir_loop_var->def->parent_instr);
 
          switch (alu->op) {
-         case nir_op_fadd:
-         case nir_op_iadd:
-         case nir_op_uadd_carry:
-         case nir_op_fsub:
-         case nir_op_isub:
-         case nir_op_usub_borrow:
-         case nir_op_fmul:
-         case nir_op_imul:
-         case nir_op_umul_high:
-         case nir_op_fdiv:
-         case nir_op_idiv:
-         case nir_op_udiv:
+         case nir_op_fadd:    case nir_op_iadd:    case nir_op_uadd_carry:
+         case nir_op_fsub:    case nir_op_isub:    case nir_op_usub_borrow:
+         case nir_op_fmul:    case nir_op_imul:    case nir_op_umul_high:
+         case nir_op_fdiv:    case nir_op_idiv:    case nir_op_udiv:
+
             biv->alu_def = src_var->nir_loop_var;
 
             for (unsigned i = 0; i < 2; i++) {
@@ -254,6 +246,7 @@ is_var_basic_induction_var(loop_variable *var, loop_info_state *state)
                   biv->invariant = get_nir_loop_var(alu->src[i].src.ssa,
                                                     state);
             }
+
             biv->alu_op = alu->op;
             break;
 
@@ -309,6 +302,7 @@ compute_induction_information(loop_info_state *state)
          }
       }
    } while (changes);
+
    return found_induction_var;
 }
 
@@ -329,6 +323,7 @@ initialize_ssa_def(nir_ssa_def *def, void *void_state)
    } else {
       var->nir_loop_var->type = undefined;
    }
+
    return true;
 }
 
@@ -337,6 +332,7 @@ initialize_block(nir_block *block, void *void_state)
 {
    nir_foreach_instr(block, instr)
       nir_foreach_ssa_def(instr, initialize_ssa_def, void_state);
+
    return true;
 }
 
@@ -344,6 +340,7 @@ static bool
 block_has_break_instr(nir_block *block, void *void_state)
 {
    bool *found_break = void_state;
+
    nir_foreach_instr(block, instr) {
       if (instr->type == nir_instr_type_jump &&
           nir_instr_as_jump(instr)->type == nir_jump_break) {
@@ -352,12 +349,13 @@ block_has_break_instr(nir_block *block, void *void_state)
          return true;
       }
    }
+
    return true;
 }
 
 static bool
-foreach_cf_node_ex_loop(nir_cf_node *node, nir_foreach_block_cb cb,
-                        void *state)
+foreach_cf_node_ex_loop(nir_cf_node *node,
+                        nir_foreach_block_cb cb, void *state)
 {
    switch (node->type) {
    case nir_cf_node_block:
@@ -400,8 +398,9 @@ is_trivial_loop_terminator(nir_if *nif)
    nir_instr *first_instr = nir_block_first_instr(first_then_block);
 
    if (first_instr && first_instr->type == nir_instr_type_jump &&
-       nir_instr_as_jump(first_instr)->type == nir_jump_break)
+       nir_instr_as_jump(first_instr)->type == nir_jump_break) {
       return true;
+   }
 
    return false;
 }
@@ -439,6 +438,7 @@ find_loop_terminators(loop_info_state *state)
          success = true;
       }
    }
+
    return success;
 }
 
@@ -455,13 +455,14 @@ get_basic_ind_var_for_loop_var(loop_variable *var, loop_info_state *state)
 }
 
 /* This function is mostly a direct port of the same functionality
- * in the GLSL compiler loop analsis pass.
+ * in the GLSL compiler loop analysis pass.
  *
- * XXX: There is a major failure here. We do not handle the swizzle!
+ * XXX: There is a major issue here; we do not handle the swizzle!
  */
 static int
 calculate_iterations(nir_const_value *initial, nir_const_value *step,
-                     nir_const_value *limit, nir_op cond_op, nir_loop_variable *alu_def, nir_alu_instr *cond_alu)
+                     nir_const_value *limit, nir_op cond_op,
+                     nir_loop_variable *alu_def, nir_alu_instr *cond_alu)
 {
    /* Superfluous assert */
    assert(initial != NULL && step != NULL && limit != NULL);
@@ -469,7 +470,7 @@ calculate_iterations(nir_const_value *initial, nir_const_value *step,
    nir_alu_instr *alu = nir_instr_as_alu(alu_def->def->parent_instr);
 
    /* Check both sources for the alu-op. Find which is which and
-    * safe the swizzle we want to use for each of them. Do the same
+    * save the swizzle we want to use for each of them. Do the same
     * for the comparison instruction. This means that cond_op needs
     * to be replaced with the nir_loop_variable or ssa_def equivalent.
     */
@@ -533,7 +534,7 @@ calculate_iterations(nir_const_value *initial, nir_const_value *step,
       }
    }
 
-   return (valid_loop) ? iter_int : -1;
+   return valid_loop ? iter_int : -1;
 }
 
 static void
@@ -563,16 +564,11 @@ find_trip_count(loop_info_state *state)
       nir_op cond_op;
 
       switch (alu->op) {
-      case nir_op_uge:
-      case nir_op_ult:
-      case nir_op_feq:
-      case nir_op_fge:
-      case nir_op_flt:
-      case nir_op_fne:
-      case nir_op_ieq:
-      case nir_op_ige:
-      case nir_op_ilt:
-      case nir_op_ine:
+      case nir_op_fge:      case nir_op_ige:      case nir_op_uge:
+      case nir_op_flt:      case nir_op_ilt:      case nir_op_ult:
+      case nir_op_feq:      case nir_op_ieq:
+      case nir_op_fne:      case nir_op_ine:
+
          /* We assume that the limit is the "right" operand */
          basic_ind = get_loop_var(alu->src[0].src.ssa, state);
          limit = get_loop_var(alu->src[1].src.ssa, state);
