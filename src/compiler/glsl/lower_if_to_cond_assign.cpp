@@ -47,7 +47,8 @@
 
 #include "compiler/glsl_types.h"
 #include "ir.h"
-#include "util/hash_table.h"
+#include "util/set.h"
+#include "util/hash_table.h" /* Needed for the hashing functions */
 
 namespace {
 
@@ -60,13 +61,13 @@ public:
       this->depth = 0;
 
       this->condition_variables =
-            _mesa_hash_table_create(NULL, _mesa_hash_pointer,
+            _mesa_set_create(NULL, _mesa_hash_pointer,
                                     _mesa_key_pointer_equal);
    }
 
    ~ir_if_to_cond_assign_visitor()
    {
-      _mesa_hash_table_destroy(this->condition_variables, NULL);
+      _mesa_set_destroy(this->condition_variables, NULL);
    }
 
    ir_visitor_status visit_enter(ir_if *);
@@ -76,7 +77,7 @@ public:
    unsigned max_depth;
    unsigned depth;
 
-   struct hash_table *condition_variables;
+   struct set *condition_variables;
 };
 
 } /* anonymous namespace */
@@ -115,22 +116,22 @@ void
 move_block_to_cond_assign(void *mem_ctx,
 			  ir_if *if_ir, ir_rvalue *cond_expr,
 			  exec_list *instructions,
-			  struct hash_table *ht)
+			  struct set *set)
 {
    foreach_in_list_safe(ir_instruction, ir, instructions) {
       if (ir->ir_type == ir_type_assignment) {
 	 ir_assignment *assign = (ir_assignment *)ir;
 
-	 if (_mesa_hash_table_search(ht, assign) == NULL) {
-	    _mesa_hash_table_insert(ht, assign, assign);
+	 if (_mesa_set_search(set, assign) == NULL) {
+	    _mesa_set_add(set, assign);
 
 	    /* If the LHS of the assignment is a condition variable that was
 	     * previously added, insert an additional assignment of false to
 	     * the variable.
 	     */
 	    const bool assign_to_cv =
-	          _mesa_hash_table_search(
-	                ht, assign->lhs->variable_referenced()) != NULL;
+	          _mesa_set_search(
+	                set, assign->lhs->variable_referenced()) != NULL;
 
 	    if (!assign->condition) {
           if (assign_to_cv) {
@@ -212,7 +213,7 @@ ir_if_to_cond_assign_visitor::visit_leave(ir_if *ir)
    /* Add the new condition variable to the hash table.  This allows us to
     * find this variable when lowering other (enclosing) if-statements.
     */
-   _mesa_hash_table_insert(this->condition_variables, then_var, then_var);
+   _mesa_set_add(this->condition_variables, then_var);
 
    /* If there are instructions in the else-clause, store the inverse of the
     * condition to a variable.  Move all of the instructions from the
@@ -243,7 +244,7 @@ ir_if_to_cond_assign_visitor::visit_leave(ir_if *ir)
       /* Add the new condition variable to the hash table.  This allows us to
        * find this variable when lowering other (enclosing) if-statements.
        */
-      _mesa_hash_table_insert(this->condition_variables, else_var, else_var);
+      _mesa_set_add(this->condition_variables, else_var);
    }
 
    ir->remove();
