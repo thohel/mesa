@@ -26,6 +26,7 @@
 #include "glsl_parser_extras.h"
 #include "ir.h"
 #include "program.h"
+#include "util/set.h"
 #include "util/hash_table.h"
 #include "linker.h"
 
@@ -46,18 +47,18 @@ public:
       this->success = true;
       this->linked = linked;
 
-      this->locals = _mesa_hash_table_create(NULL, _mesa_hash_pointer,
-                                             _mesa_key_pointer_equal);
+      this->locals = _mesa_set_create(NULL, _mesa_hash_pointer,
+                                      _mesa_key_pointer_equal);
    }
 
    ~call_link_visitor()
    {
-      _mesa_hash_table_destroy(this->locals, NULL);
+      _mesa_set_destroy(this->locals, NULL);
    }
 
    virtual ir_visitor_status visit(ir_variable *ir)
    {
-      _mesa_hash_table_insert(locals, ir, ir);
+      _mesa_set_add(locals, ir);
       return visit_continue;
    }
 
@@ -218,7 +219,7 @@ public:
 
    virtual ir_visitor_status visit(ir_dereference_variable *ir)
    {
-      if (_mesa_hash_table_search(locals, ir->var) == NULL) {
+      if (_mesa_set_search(locals, ir->var) == NULL) {
 	 /* The non-function variable must be a global, so try to find the
 	  * variable in the shader's symbol table.  If the variable is not
 	  * found, then it's a global that *MUST* be defined in the original
@@ -303,7 +304,7 @@ private:
    /**
     * Table of variables local to the function.
     */
-   hash_table *locals;
+   set *locals;
 };
 
 } /* anonymous namespace */
