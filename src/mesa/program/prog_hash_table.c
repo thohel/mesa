@@ -35,33 +35,27 @@
 unsigned
 hash_table_string_hash(const void *key)
 {
-    const char *str = (const char *) key;
-    unsigned hash = 5381;
-
-
-    while (*str != '\0') {
-        hash = (hash * 33) + *str;
-        str++;
-    }
-
-    return hash;
+   const char *str = (const char *) key;
+   uint32_t hash = _mesa_hash_string(str);
+   return hash;
 }
 
-bool hash_table_string_compare(const void *a, const void *b)
+bool
+hash_table_string_compare(const void *a, const void *b)
 {
-   return strcmp(a, b) == 0;
+   return _mesa_key_string_equal(a, b);
 }
 
 
 unsigned
 hash_table_pointer_hash(const void *key)
 {
-   return (unsigned)((uintptr_t) key / sizeof(void *));
+   return _mesa_hash_pointer(key);
 }
 
 
 bool
 hash_table_pointer_compare(const void *key1, const void *key2)
 {
-   return key1 == key2;
+   return _mesa_key_pointer_equal(key1, key2);
 }
