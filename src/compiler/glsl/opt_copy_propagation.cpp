@@ -220,10 +220,7 @@ ir_copy_propagation_visitor::handle_if_block(exec_list *instructions)
    this->killed_all = false;
 
    /* Populate the initial acp with a copy of the original */
-   struct hash_entry *entry;
-   hash_table_foreach(orig_acp, entry) {
-      _mesa_hash_table_insert(acp, entry->key, entry->data);
-   }
+   acp = _mesa_hash_table_clone(orig_acp, NULL);
 
    visit_list_elements(this, instructions);
 
@@ -271,10 +268,10 @@ ir_copy_propagation_visitor::handle_loop(ir_loop *ir, bool keep_acp)
    this->killed_all = false;
 
    if (keep_acp) {
-      struct hash_entry *entry;
-      hash_table_foreach(orig_acp, entry) {
-         _mesa_hash_table_insert(acp, entry->key, entry->data);
-      }
+      acp = _mesa_hash_table_clone(orig_acp, NULL);
+   } else {
+      acp = _mesa_hash_table_create(NULL, _mesa_hash_pointer,
+                                    _mesa_key_pointer_equal);
    }
 
    visit_list_elements(this, &ir->body_instructions);
