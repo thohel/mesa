@@ -115,6 +115,7 @@ public:
    virtual ir_visitor_status visit_enter(class ir_function_signature *);
    virtual ir_visitor_status visit_enter(class ir_function *);
    virtual ir_visitor_status visit_leave(class ir_assignment *);
+   virtual ir_visitor_status visit_enter(ir_discard *ir);
    virtual ir_visitor_status visit_enter(class ir_call *);
    virtual ir_visitor_status visit_enter(class ir_if *);
 
@@ -142,6 +143,52 @@ public:
    void *lin_ctx;
 };
 
+bool
+ir_constant_fold(ir_rvalue **rvalue)
+{
+   if (*rvalue == NULL || (*rvalue)->ir_type == ir_type_constant)
+      return false;
+
+   /* Note that we do rvalue visitoring on leaving.  So if an
+    * expression has a non-constant operand, no need to go looking
+    * down it to find if it's constant.  This cuts the time of this
+    * pass down drastically.
+    */
+   ir_expression *expr = (*rvalue)->as_expression();
+   if (expr) {
+      for (unsigned int i = 0; i < expr->get_num_operands(); i++) {
+	 if (!expr->operands[i]->as_constant())
+	    return false;
+      }
+   }
+
+   /* Ditto for swizzles. */
+   ir_swizzle *swiz = (*rvalue)->as_swizzle();
+   if (swiz && !swiz->val->as_constant())
+      return false;
+
+   /* Ditto for array dereferences */
+   ir_dereference_array *array_ref = (*rvalue)->as_dereference_array();
+   if (array_ref && (!array_ref->array->as_constant() ||
+                     !array_ref->array_index->as_constant()))
+      return false;
+
+   /* No constant folding can be performed on variable dereferences.  We need
+    * to explicitly avoid them, as calling constant_expression_value() on a
+    * variable dereference will return a clone of var->constant_value.  This
+    * would make us propagate the value into the tree, which isn't our job.
+    */
+   ir_dereference_variable *var_ref = (*rvalue)->as_dereference_variable();
+   if (var_ref)
+      return false;
+
+   ir_constant *constant = (*rvalue)->constant_expression_value();
+   if (constant) {
+      *rvalue = constant;
+      return true;
+   }
+   return false;
+}
 
 void
 ir_constant_propagation_visitor::constant_folding(ir_rvalue **rvalue)
@@ -284,6 +331,24 @@ ir_constant_propagation_visitor::visit_leave(ir_assignment *ir)
 {
   constant_folding(&ir->rhs);
 
+   if (ir->condition) {
+      ir->condition->accept(this);
+      constant_folding(&ir->condition);
+
+      ir_constant *const_val = ir->condition->as_constant();
+      /* If the condition is constant, either remove the condition or
+       * remove the never-executed assignment.
+       */
+      if (const_val) {
+	 if (const_val->value.b[0])
+	    ir->condition = NULL;
+	 else
+	    ir->remove();
+	 this->progress = true;
+         return visit_continue;
+      }
+   }
+
    if (this->in_assignee)
       return visit_continue;
 
@@ -337,6 +402,15 @@ ir_constant_propagation_visitor::visit_enter(ir_call *ir)
 	 else
 	    param->accept(this);
       }
+   }
+
+   /* Next, see if the call can be replaced with an assignment of a constant */
+   ir_constant *const_val = ir->constant_expression_value();
+
+   if (const_val != NULL) {
+      ir_assignment *assignment =
+	 new(ralloc_parent(ir)) ir_assignment(ir->return_deref, const_val);
+      ir->replace_with(assignment);
    }
 
    /* Since we're unlinked, we don't (necssarily) know the side effects of
@@ -463,6 +537,29 @@ ir_constant_propagation_visitor::kill(ir_variable *var, unsigned write_mask)
    /* Not already in the hash table.  Make new entry. */
    _mesa_hash_table_insert(this->kills, var,
                            new(this->lin_ctx) kill_entry(var, write_mask));
+}
+
+ir_visitor_status
+ir_constant_propagation_visitor::visit_enter(ir_discard *ir)
+{
+   if (ir->condition) {
+      ir->condition->accept(this);
+      handle_rvalue(&ir->condition);
+
+      ir_constant *const_val = ir->condition->as_constant();
+      /* If the condition is constant, either remove the condition or
+       * remove the never-executed assignment.
+       */
+      if (const_val) {
+         if (const_val->value.b[0])
+            ir->condition = NULL;
+         else
+            ir->remove();
+         this->progress = true;
+      }
+   }
+
+   return visit_continue_with_parent;
 }
 
 /**

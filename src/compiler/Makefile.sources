@@ -114,7 +114,6 @@ LIBGLSL_FILES = \
 	glsl/lower_ubo_reference.cpp \
 	glsl/opt_algebraic.cpp \
 	glsl/opt_array_splitting.cpp \
-	glsl/opt_constant_folding.cpp \
 	glsl/opt_constant_propagation.cpp \
 	glsl/opt_constant_variable.cpp \
 	glsl/opt_copy_propagation.cpp \
