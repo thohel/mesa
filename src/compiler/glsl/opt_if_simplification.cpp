@@ -70,6 +70,40 @@ do_if_simplification(exec_list *instructions)
    return v.made_progress;
 }
 
+/**
+ *
+ * Replace
+ *
+ *    if (cond) discard;
+ *
+ * with
+ *
+ *    (discard <condition>)
+ */
+static bool
+opt_conditional_discard(ir_if *ir)
+{
+   /* Look for "if (...) discard" with no else clause or extra statements. */
+   if (ir->then_instructions.is_empty() ||
+       !ir->then_instructions.get_head_raw()->next->is_tail_sentinel() ||
+       !((ir_instruction *) ir->then_instructions.get_head_raw())->as_discard() ||
+       !ir->else_instructions.is_empty())
+      return visit_continue;
+
+   /* Move the condition and replace the ir_if with the ir_discard. */
+   ir_discard *discard = (ir_discard *) ir->then_instructions.get_head_raw();
+   if (!discard->condition)
+      discard->condition = ir->condition;
+   else {
+      void *ctx = ralloc_parent(ir);
+      discard->condition = new(ctx) ir_expression(ir_binop_logic_and,
+                                                  ir->condition,
+                                                  discard->condition);
+   }
+   ir->replace_with(discard);
+
+   return true;
+}
 
 /**
  * 
@@ -115,6 +149,11 @@ ir_if_simplification_visitor::visit_leave(ir_if *ir)
     */
    if (opt_flatten_nested_if_blocks(ir))
       this->made_progress = true;
+
+   if (opt_conditional_discard(ir)) {
+      this->made_progress = true;
+      return visit_continue;
+   }
 
    /* If the if statement has nothing on either side, remove it. */
    if (ir->then_instructions.is_empty() &&

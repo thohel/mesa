@@ -2178,7 +2178,6 @@ do_common_optimization(exec_list *ir, bool linked,
    }
    propagate_invariance(ir);
    OPT(do_if_simplification, ir);
-   OPT(opt_conditional_discard, ir);
    OPT(do_copy_propagation, ir);
    OPT(do_copy_propagation_elements, ir);
 
