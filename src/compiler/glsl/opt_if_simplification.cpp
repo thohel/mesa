@@ -30,6 +30,9 @@
  */
 
 #include "ir.h"
+#include "ir_builder.h"
+
+using namespace ir_builder;
 
 namespace {
 
@@ -68,9 +71,51 @@ do_if_simplification(exec_list *instructions)
 }
 
 
+/**
+ * 
+ * Flattens nested if blocks such as:
+ *
+ * if (x) {
+ *    if (y) {
+ *       ...
+ *    }
+ * }
+ *
+ * into a single if block with a combined condition:
+ *
+ * if (x && y) {
+ *    ...
+ * }
+ */
+static bool
+opt_flatten_nested_if_blocks(ir_if *ir)
+{
+   /* Only handle a single ir_if within the then clause of an ir_if.  No extra
+    * instructions, no else clauses, nothing.
+    */
+   if (ir->then_instructions.is_empty() || !ir->else_instructions.is_empty())
+      return visit_continue;
+
+   ir_if *inner = ((ir_instruction *) ir->then_instructions.get_head_raw())->as_if();
+   if (!inner || !inner->next->is_tail_sentinel() ||
+       !inner->else_instructions.is_empty())
+      return visit_continue;
+
+   ir->condition = logic_and(ir->condition, inner->condition);
+   inner->then_instructions.move_nodes_to(&ir->then_instructions);
+
+   return true;
+}
+
 ir_visitor_status
 ir_if_simplification_visitor::visit_leave(ir_if *ir)
 {
+   /* If we flattened an if expression, we can still possibly simplify
+    * it further. Therefore we continue on instead of returning.
+    */
+   if (opt_flatten_nested_if_blocks(ir))
+      this->made_progress = true;
+
    /* If the if statement has nothing on either side, remove it. */
    if (ir->then_instructions.is_empty() &&
        ir->else_instructions.is_empty()) {
