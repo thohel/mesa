@@ -2209,7 +2209,6 @@ do_common_optimization(exec_list *ir, bool linked,
        options->EmitNoCont, options->EmitNoLoops);
    OPT(do_vec_index_to_swizzle, ir);
    OPT(lower_vector_insert, ir, false);
-   OPT(do_swizzle_swizzle, ir);
    OPT(do_noop_swizzle, ir);
 
    OPT(optimize_split_arrays, ir, linked);
