@@ -83,7 +83,7 @@ _mesa_set_create(void *mem_ctx,
    if (ht == NULL)
       return NULL;
 
-   ht->size_iteration = 2;
+   ht->size_iteration = 3;
    ht->size = 1 << ht->size_iteration;
    ht->max_entries = ht->size * 0.9;
    ht->key_hash_function = key_hash_function;
