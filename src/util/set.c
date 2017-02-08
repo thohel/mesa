@@ -85,7 +85,7 @@ _mesa_set_create(void *mem_ctx,
 
    ht->size_iteration = 3;
    ht->size = 1 << ht->size_iteration;
-   ht->max_entries = ht->size * 0.9;
+   ht->max_entries = ht->size - 1;
    ht->key_hash_function = key_hash_function;
    ht->key_equals_function = key_equals_function;
    ht->table = rzalloc_array(ht, struct set_entry, ht->size);
