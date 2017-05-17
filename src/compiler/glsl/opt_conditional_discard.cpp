@@ -46,11 +46,22 @@ public:
    }
 
    ir_visitor_status visit_leave(ir_if *);
+   ir_visitor_status visit_enter(ir_assignment *);
 
    bool progress;
 };
 
 } /* anonymous namespace */
+
+/* We only care about the top level "if" instructions, so don't
+ * descend into expressions.
+ */
+ir_visitor_status
+opt_conditional_discard_visitor::visit_enter(ir_assignment *ir)
+{
+   (void) ir;
+   return visit_continue_with_parent;
+}
 
 bool
 opt_conditional_discard(exec_list *instructions)
