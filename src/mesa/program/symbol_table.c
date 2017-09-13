@@ -177,7 +177,12 @@ _mesa_symbol_table_add_symbol(struct _mesa_symbol_table *table,
                               const char *name, void *declaration)
 {
    struct symbol *new_sym;
-   struct symbol *sym = find_symbol(table, name);
+
+   uint32_t hash = table->ht->key_hash_function(name);
+   struct hash_entry *entry =
+      _mesa_hash_table_search_pre_hashed(table->ht, hash, name);
+
+   struct symbol *sym = entry ? (struct symbol *) entry->data : NULL;
 
    if (sym && sym->depth == table->depth)
       return -1;
@@ -207,7 +212,7 @@ _mesa_symbol_table_add_symbol(struct _mesa_symbol_table *table,
 
    table->current_scope->symbols = new_sym;
 
-   _mesa_hash_table_insert(table->ht, new_sym->name, new_sym);
+   _mesa_hash_table_insert_pre_hashed(table->ht, hash, new_sym->name, new_sym);
 
    return 0;
 }
@@ -233,7 +238,12 @@ _mesa_symbol_table_add_global_symbol(struct _mesa_symbol_table *table,
 {
    struct scope_level *top_scope;
    struct symbol *inner_sym = NULL;
-   struct symbol *sym = find_symbol(table, name);
+
+   uint32_t hash = table->ht->key_hash_function(name);
+   struct hash_entry *entry =
+      _mesa_hash_table_search_pre_hashed(table->ht, hash, name);
+
+   struct symbol *sym = entry ? (struct symbol *) entry->data : NULL;
 
    while (sym) {
       if (sym->depth == 0)
@@ -278,7 +288,7 @@ _mesa_symbol_table_add_global_symbol(struct _mesa_symbol_table *table,
 
    top_scope->symbols = sym;
 
-   _mesa_hash_table_insert(table->ht, sym->name, sym);
+   _mesa_hash_table_insert_pre_hashed(table->ht, hash, sym->name, sym);
 
    return 0;
 }
