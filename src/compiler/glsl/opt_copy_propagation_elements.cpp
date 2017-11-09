@@ -46,7 +46,7 @@
 #include "ir_basic_block.h"
 #include "ir_optimization.h"
 #include "compiler/glsl_types.h"
-#include "util/hash_table.h"
+#include "util/pointer_map.h"
 
 static bool debug = false;
 
@@ -126,28 +126,26 @@ public:
 
    void create_acp()
    {
-      lhs_ht = _mesa_hash_table_create(mem_ctx, _mesa_hash_pointer,
-                                       _mesa_key_pointer_equal);
-      rhs_ht = _mesa_hash_table_create(mem_ctx, _mesa_hash_pointer,
-                                       _mesa_key_pointer_equal);
+      lhs_pm = _mesa_pointer_map_create(mem_ctx);
+      rhs_pm = _mesa_pointer_map_create(mem_ctx);
    }
 
    void destroy_acp()
    {
-      _mesa_hash_table_destroy(lhs_ht, NULL);
-      _mesa_hash_table_destroy(rhs_ht, NULL);
+      _mesa_pointer_map_destroy(lhs_pm, NULL);
+      _mesa_pointer_map_destroy(rhs_pm, NULL);
    }
 
-   void populate_acp(hash_table *lhs, hash_table *rhs)
+   void populate_acp(pointer_map *lhs, pointer_map *rhs)
    {
-      struct hash_entry *entry;
+      struct map_entry *entry;
 
-      hash_table_foreach(lhs, entry) {
-         _mesa_hash_table_insert(lhs_ht, entry->key, entry->data);
+      _mesa_pointer_map_foreach(lhs, entry) {
+         _mesa_pointer_map_insert(lhs_pm, entry->key, entry->data);
       }
 
-      hash_table_foreach(rhs, entry) {
-         _mesa_hash_table_insert(rhs_ht, entry->key, entry->data);
+      _mesa_pointer_map_foreach(rhs, entry) {
+         _mesa_pointer_map_insert(rhs_pm, entry->key, entry->data);
       }
    }
 
@@ -166,8 +164,8 @@ public:
    void handle_if_block(exec_list *instructions);
 
    /** Hash of acp_entry: The available copies to propagate */
-   hash_table *lhs_ht;
-   hash_table *rhs_ht;
+   pointer_map *lhs_pm;
+   pointer_map *rhs_pm;
 
    /**
     * List of kill_entry: The variables whose values were killed in this
@@ -198,8 +196,8 @@ ir_copy_propagation_elements_visitor::visit_enter(ir_function_signature *ir)
    exec_list *orig_kills = this->kills;
    bool orig_killed_all = this->killed_all;
 
-   hash_table *orig_lhs_ht = lhs_ht;
-   hash_table *orig_rhs_ht = rhs_ht;
+   pointer_map *orig_lhs_pm = lhs_pm;
+   pointer_map *orig_rhs_pm = rhs_pm;
 
    this->kills = new(mem_ctx) exec_list;
    this->killed_all = false;
@@ -215,8 +213,8 @@ ir_copy_propagation_elements_visitor::visit_enter(ir_function_signature *ir)
    this->kills = orig_kills;
    this->killed_all = orig_killed_all;
 
-   lhs_ht = orig_lhs_ht;
-   rhs_ht = orig_rhs_ht;
+   lhs_pm = orig_lhs_pm;
+   rhs_pm = orig_rhs_pm;
 
    return visit_continue_with_parent;
 }
@@ -303,9 +301,9 @@ ir_copy_propagation_elements_visitor::handle_rvalue(ir_rvalue **ir)
    /* Try to find ACP entries covering swizzle_chan[], hoping they're
     * the same source variable.
     */
-   hash_entry *ht_entry = _mesa_hash_table_search(lhs_ht, var);
-   if (ht_entry) {
-      exec_list *ht_list = (exec_list *) ht_entry->data;
+   map_entry *pm_entry = _mesa_pointer_map_search(lhs_pm, var);
+   if (pm_entry) {
+      exec_list *ht_list = (exec_list *) pm_entry->data;
       foreach_in_list(acp_entry, entry, ht_list) {
          for (int c = 0; c < chans; c++) {
             if (entry->write_mask & (1 << swizzle_chan[c])) {
@@ -375,8 +373,8 @@ ir_copy_propagation_elements_visitor::visit_enter(ir_call *ir)
    /* Since we're unlinked, we don't (necessarily) know the side effects of
     * this call.  So kill all copies.
     */
-   _mesa_hash_table_clear(lhs_ht, NULL);
-   _mesa_hash_table_clear(rhs_ht, NULL);
+   _mesa_pointer_map_clear(lhs_pm);
+   _mesa_pointer_map_clear(rhs_pm);
 
    this->killed_all = true;
 
@@ -389,8 +387,8 @@ ir_copy_propagation_elements_visitor::handle_if_block(exec_list *instructions)
    exec_list *orig_kills = this->kills;
    bool orig_killed_all = this->killed_all;
 
-   hash_table *orig_lhs_ht = lhs_ht;
-   hash_table *orig_rhs_ht = rhs_ht;
+   pointer_map *orig_lhs_pm = lhs_pm;
+   pointer_map *orig_rhs_pm = rhs_pm;
 
    this->kills = new(mem_ctx) exec_list;
    this->killed_all = false;
@@ -398,13 +396,13 @@ ir_copy_propagation_elements_visitor::handle_if_block(exec_list *instructions)
    create_acp();
 
    /* Populate the initial acp with a copy of the original */
-   populate_acp(orig_lhs_ht, orig_rhs_ht);
+   populate_acp(orig_lhs_pm, orig_rhs_pm);
 
    visit_list_elements(this, instructions);
 
    if (this->killed_all) {
-      _mesa_hash_table_clear(orig_lhs_ht, NULL);
-      _mesa_hash_table_clear(orig_rhs_ht, NULL);
+      _mesa_pointer_map_clear(orig_lhs_pm);
+      _mesa_pointer_map_clear(orig_rhs_pm);
    }
 
    exec_list *new_kills = this->kills;
@@ -413,8 +411,8 @@ ir_copy_propagation_elements_visitor::handle_if_block(exec_list *instructions)
 
    destroy_acp();
 
-   lhs_ht = orig_lhs_ht;
-   rhs_ht = orig_rhs_ht;
+   lhs_pm = orig_lhs_pm;
+   rhs_pm = orig_rhs_pm;
 
    /* Move the new kills into the parent block's list, removing them
     * from the parent's ACP list in the process.
@@ -444,8 +442,8 @@ ir_copy_propagation_elements_visitor::handle_loop(ir_loop *ir, bool keep_acp)
    exec_list *orig_kills = this->kills;
    bool orig_killed_all = this->killed_all;
 
-   hash_table *orig_lhs_ht = lhs_ht;
-   hash_table *orig_rhs_ht = rhs_ht;
+   pointer_map *orig_lhs_pm = lhs_pm;
+   pointer_map *orig_rhs_pm = rhs_pm;
 
    /* FINISHME: For now, the initial acp for loops is totally empty.
     * We could go through once, then go through again with the acp
@@ -458,14 +456,14 @@ ir_copy_propagation_elements_visitor::handle_loop(ir_loop *ir, bool keep_acp)
 
    if (keep_acp) {
       /* Populate the initial acp with a copy of the original */
-      populate_acp(orig_lhs_ht, orig_rhs_ht);
+      populate_acp(orig_lhs_pm, orig_rhs_pm);
    }
 
    visit_list_elements(this, &ir->body_instructions);
 
    if (this->killed_all) {
-      _mesa_hash_table_clear(orig_lhs_ht, NULL);
-      _mesa_hash_table_clear(orig_rhs_ht, NULL);
+      _mesa_pointer_map_clear(orig_lhs_pm);
+      _mesa_pointer_map_clear(orig_rhs_pm);
    }
 
    exec_list *new_kills = this->kills;
@@ -474,8 +472,8 @@ ir_copy_propagation_elements_visitor::handle_loop(ir_loop *ir, bool keep_acp)
 
    destroy_acp();
 
-   lhs_ht = orig_lhs_ht;
-   rhs_ht = orig_rhs_ht;
+   lhs_pm = orig_lhs_pm;
+   rhs_pm = orig_rhs_pm;
 
    foreach_in_list_safe(kill_entry, k, new_kills) {
       kill(k);
@@ -499,9 +497,9 @@ void
 ir_copy_propagation_elements_visitor::kill(kill_entry *k)
 {
    /* removal of lhs entries */
-   hash_entry *ht_entry = _mesa_hash_table_search(lhs_ht, k->var);
-   if (ht_entry) {
-      exec_list *lhs_list = (exec_list *) ht_entry->data;
+   map_entry *pm_entry = _mesa_pointer_map_search(lhs_pm, k->var);
+   if (pm_entry) {
+      exec_list *lhs_list = (exec_list *) pm_entry->data;
       foreach_in_list_safe(acp_entry, entry, lhs_list) {
          entry->write_mask = entry->write_mask & ~k->write_mask;
          if (entry->write_mask == 0) {
@@ -512,9 +510,9 @@ ir_copy_propagation_elements_visitor::kill(kill_entry *k)
    }
 
    /* removal of rhs entries */
-   ht_entry = _mesa_hash_table_search(rhs_ht, k->var);
-   if (ht_entry) {
-      exec_list *rhs_list = (exec_list *) ht_entry->data;
+   pm_entry = _mesa_pointer_map_search(rhs_pm, k->var);
+   if (pm_entry) {
+      exec_list *rhs_list = (exec_list *) pm_entry->data;
       acp_ref *ref;
 
       while ((ref = (acp_ref *) rhs_list->pop_head()) != NULL) {
@@ -599,25 +597,25 @@ ir_copy_propagation_elements_visitor::add_copy(ir_assignment *ir)
 					swizzle);
 
    /* lhs hash, hash of lhs -> acp_entry lists */
-   hash_entry *ht_entry = _mesa_hash_table_search(lhs_ht, lhs->var);
-   if (ht_entry) {
-      exec_list *lhs_list = (exec_list *) ht_entry->data;
+   map_entry *pm_entry = _mesa_pointer_map_search(lhs_pm, lhs->var);
+   if (pm_entry) {
+      exec_list *lhs_list = (exec_list *) pm_entry->data;
       lhs_list->push_tail(entry);
    } else {
       exec_list *lhs_list = new(mem_ctx) exec_list;
       lhs_list->push_tail(entry);
-      _mesa_hash_table_insert(lhs_ht, lhs->var, lhs_list);
+      _mesa_pointer_map_insert(lhs_pm, lhs->var, lhs_list);
    }
 
    /* rhs hash, hash of rhs -> acp_entry pointers to lhs lists */
-   ht_entry = _mesa_hash_table_search(rhs_ht, rhs->var);
-   if (ht_entry) {
-      exec_list *rhs_list = (exec_list *) ht_entry->data;
+   pm_entry = _mesa_pointer_map_search(rhs_pm, rhs->var);
+   if (pm_entry) {
+      exec_list *rhs_list = (exec_list *) pm_entry->data;
       rhs_list->push_tail(&entry->rhs_node);
    } else {
       exec_list *rhs_list = new(mem_ctx) exec_list;
       rhs_list->push_tail(&entry->rhs_node);
-      _mesa_hash_table_insert(rhs_ht, rhs->var, rhs_list);
+      _mesa_pointer_map_insert(rhs_pm, rhs->var, rhs_list);
    }
 }
 
