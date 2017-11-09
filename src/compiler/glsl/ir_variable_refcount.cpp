@@ -33,17 +33,16 @@
 #include "ir_visitor.h"
 #include "ir_variable_refcount.h"
 #include "compiler/glsl_types.h"
-#include "util/hash_table.h"
+#include "util/pointer_map.h"
 
 ir_variable_refcount_visitor::ir_variable_refcount_visitor()
 {
    this->mem_ctx = ralloc_context(NULL);
-   this->ht = _mesa_hash_table_create(NULL, _mesa_hash_pointer,
-                                      _mesa_key_pointer_equal);
+   this->pm = _mesa_pointer_map_create(NULL);
 }
 
 static void
-free_entry(struct hash_entry *entry)
+free_entry(struct map_entry *entry)
 {
    ir_variable_refcount_entry *ivre = (ir_variable_refcount_entry *) entry->data;
 
@@ -61,7 +60,7 @@ free_entry(struct hash_entry *entry)
 ir_variable_refcount_visitor::~ir_variable_refcount_visitor()
 {
    ralloc_free(this->mem_ctx);
-   _mesa_hash_table_destroy(this->ht, free_entry);
+   _mesa_pointer_map_destroy(this->pm, free_entry);
 }
 
 // constructor
@@ -79,13 +78,13 @@ ir_variable_refcount_visitor::get_variable_entry(ir_variable *var)
 {
    assert(var);
 
-   struct hash_entry *e = _mesa_hash_table_search(this->ht, var);
+   struct map_entry *e = _mesa_pointer_map_search(this->pm, var);
    if (e)
       return (ir_variable_refcount_entry *)e->data;
 
    ir_variable_refcount_entry *entry = new ir_variable_refcount_entry(var);
    assert(entry->referenced_count == 0);
-   _mesa_hash_table_insert(this->ht, var, entry);
+   _mesa_pointer_map_insert(this->pm, var, entry);
 
    return entry;
 }

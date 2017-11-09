@@ -31,7 +31,7 @@
 #include "ir_visitor.h"
 #include "ir_variable_refcount.h"
 #include "compiler/glsl_types.h"
-#include "util/hash_table.h"
+#include "util/pointer_map.h"
 
 static bool debug = false;
 
@@ -50,8 +50,8 @@ do_dead_code(exec_list *instructions, bool uniform_locations_assigned)
 
    v.run(instructions);
 
-   struct hash_entry *e;
-   hash_table_foreach(v.ht, e) {
+   struct map_entry *e;
+   _mesa_pointer_map_foreach(v.pm, e) {
       ir_variable_refcount_entry *entry = (ir_variable_refcount_entry *)e->data;
 
       /* Since each assignment is a reference, the refereneced count must be

@@ -81,9 +81,9 @@ public:
    ir_variable_refcount_entry *get_variable_entry(ir_variable *var);
 
    /**
-    * Hash table mapping ir_variable to ir_variable_refcount_entry.
+    * Pointer map mapping ir_variable to ir_variable_refcount_entry.
     */
-   struct hash_table *ht;
+   struct pointer_map *pm;
 
    void *mem_ctx;
 };
