@@ -198,8 +198,8 @@ struct set_entry *
 _mesa_set_search_pre_hashed(const struct set *set, uint32_t hash,
                             const void *key)
 {
-   assert(set->key_hash_function == NULL ||
-          hash == set->key_hash_function(key));
+//   assert(set->key_hash_function == NULL ||
+//          hash == set->key_hash_function(key));
    return set_search(set, hash, key);
 }
 
@@ -319,8 +319,8 @@ _mesa_set_add(struct set *set, const void *key)
 struct set_entry *
 _mesa_set_add_pre_hashed(struct set *set, uint32_t hash, const void *key)
 {
-   assert(set->key_hash_function == NULL ||
-          hash == set->key_hash_function(key));
+   //assert(set->key_hash_function == NULL ||
+ //         hash == set->key_hash_function(key));
    return set_add(set, hash, key);
 }
 
