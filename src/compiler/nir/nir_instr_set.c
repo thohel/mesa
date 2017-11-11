@@ -508,7 +508,9 @@ nir_instr_set_add_or_rewrite(struct set *instr_set, nir_instr *instr)
    if (!instr_can_rewrite(instr))
       return false;
 
-   struct set_entry *entry = _mesa_set_search(instr_set, instr);
+   uint32_t instr_hash = hash_instr(instr);
+   struct set_entry *entry =
+         _mesa_set_search_pre_hashed(instr_set, instr_hash, instr);
    if (entry) {
       nir_ssa_def *def = nir_instr_get_dest_ssa_def(instr);
       nir_instr *match = (nir_instr *) entry->key;
@@ -526,7 +528,7 @@ nir_instr_set_add_or_rewrite(struct set *instr_set, nir_instr *instr)
       return true;
    }
 
-   _mesa_set_add(instr_set, instr);
+   _mesa_set_add_pre_hashed(instr_set, instr_hash, instr);
    return false;
 }
 
