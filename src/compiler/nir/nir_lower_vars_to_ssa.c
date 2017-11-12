@@ -30,6 +30,7 @@
 #include "nir_phi_builder.h"
 #include "nir_vla.h"
 #include "util/pointer_map.h"
+#include "util/pointer_set.h"
 
 
 struct deref_node {
@@ -45,9 +46,9 @@ struct deref_node {
    nir_deref_var *deref;
    struct exec_node direct_derefs_link;
 
-   struct set *loads;
-   struct set *stores;
-   struct set *copies;
+   struct pointer_set *loads;
+   struct pointer_set *stores;
+   struct pointer_set *copies;
 
    struct nir_phi_builder_value *pb_value;
 
@@ -367,10 +368,9 @@ register_load_instr(nir_intrinsic_instr *load_instr,
       return;
 
    if (node->loads == NULL)
-      node->loads = _mesa_set_create(state->dead_ctx, _mesa_hash_pointer,
-                                     _mesa_key_pointer_equal);
+      node->loads = _mesa_pointer_set_create(state->dead_ctx);
 
-   _mesa_set_add(node->loads, load_instr);
+   _mesa_pointer_set_insert(node->loads, load_instr);
 }
 
 static void
@@ -382,10 +382,9 @@ register_store_instr(nir_intrinsic_instr *store_instr,
       return;
 
    if (node->stores == NULL)
-      node->stores = _mesa_set_create(state->dead_ctx, _mesa_hash_pointer,
-                                     _mesa_key_pointer_equal);
+      node->stores = _mesa_pointer_set_create(state->dead_ctx);
 
-   _mesa_set_add(node->stores, store_instr);
+   _mesa_pointer_set_insert(node->stores, store_instr);
 }
 
 static void
@@ -400,10 +399,9 @@ register_copy_instr(nir_intrinsic_instr *copy_instr,
          continue;
 
       if (node->copies == NULL)
-         node->copies = _mesa_set_create(state->dead_ctx, _mesa_hash_pointer,
-                                         _mesa_key_pointer_equal);
+         node->copies = _mesa_pointer_set_create(state->dead_ctx);
 
-      _mesa_set_add(node->copies, copy_instr);
+      _mesa_pointer_set_insert(node->copies, copy_instr);
    }
 }
 
@@ -449,8 +447,8 @@ lower_copies_to_load_store(struct deref_node *node,
    if (!node->copies)
       return true;
 
-   struct set_entry *copy_entry;
-   set_foreach(node->copies, copy_entry) {
+   struct pointer_set_entry *copy_entry;
+   _mesa_pointer_set_foreach(node->copies, copy_entry) {
       nir_intrinsic_instr *copy = (void *)copy_entry->key;
 
       nir_lower_var_copy_instr(copy, state->shader);
@@ -463,9 +461,10 @@ lower_copies_to_load_store(struct deref_node *node,
          if (arg_node == NULL || arg_node == node)
             continue;
 
-         struct set_entry *arg_entry = _mesa_set_search(arg_node->copies, copy);
+         struct pointer_set_entry *arg_entry =
+               _mesa_pointer_set_search(arg_node->copies, copy);
          assert(arg_entry);
-         _mesa_set_remove(node->copies, arg_entry);
+         _mesa_pointer_set_remove(node->copies, arg_entry);
       }
 
       nir_instr_remove(&copy->instr);
@@ -713,8 +712,8 @@ nir_lower_vars_to_ssa_impl(nir_function_impl *impl)
       assert(node->deref->var->constant_initializer == NULL);
 
       if (node->stores) {
-         struct set_entry *store_entry;
-         set_foreach(node->stores, store_entry) {
+         struct pointer_set_entry *store_entry;
+         _mesa_pointer_set_foreach(node->stores, store_entry) {
             nir_intrinsic_instr *store =
                (nir_intrinsic_instr *)store_entry->key;
             BITSET_SET(store_blocks, store->instr.block->index);
