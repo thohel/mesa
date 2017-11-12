@@ -50,6 +50,8 @@ files_mesa_util = files(
   'os_time.h',
   'pointer_map.c',
   'pointer_map.h',
+  'pointer_set.c',
+  'pointer_set.h',
   'sha1/sha1.c',
   'sha1/sha1.h',
   'ralloc.c',
