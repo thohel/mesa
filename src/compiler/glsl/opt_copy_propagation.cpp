@@ -38,8 +38,7 @@
 #include "ir_optimization.h"
 #include "compiler/glsl_types.h"
 #include "util/pointer_map.h"
-#include "util/hash_table.h"
-#include "util/set.h"
+#include "util/pointer_set.h"
 
 namespace {
 
@@ -51,8 +50,7 @@ public:
       mem_ctx = ralloc_context(0);
       lin_ctx = linear_alloc_parent(mem_ctx, 0);
       acp = _mesa_pointer_map_create(mem_ctx);
-      kills = _mesa_set_create(mem_ctx, _mesa_hash_pointer,
-                               _mesa_key_pointer_equal);
+      kills = _mesa_pointer_set_create(mem_ctx);
       killed_all = false;
    }
    ~ir_copy_propagation_visitor()
@@ -79,7 +77,7 @@ public:
    /**
     * Set of ir_variables: Whose values were killed in this block.
     */
-   set *kills;
+   pointer_set *kills;
 
    bool progress;
 
@@ -99,18 +97,17 @@ ir_copy_propagation_visitor::visit_enter(ir_function_signature *ir)
     * main() at link time, so they're irrelevant to us.
     */
    pointer_map *orig_acp = this->acp;
-   set *orig_kills = this->kills;
+   pointer_set *orig_kills = this->kills;
    bool orig_killed_all = this->killed_all;
 
    acp = _mesa_pointer_map_create(NULL);
-   kills = _mesa_set_create(NULL, _mesa_hash_pointer,
-                            _mesa_key_pointer_equal);
+   kills = _mesa_pointer_set_create(NULL);
    this->killed_all = false;
 
    visit_list_elements(this, &ir->body);
 
    _mesa_pointer_map_destroy(acp, NULL);
-   _mesa_set_destroy(kills, NULL);
+   _mesa_pointer_set_destroy(kills, NULL);
 
    this->kills = orig_kills;
    this->acp = orig_acp;
@@ -209,12 +206,11 @@ void
 ir_copy_propagation_visitor::handle_if_block(exec_list *instructions)
 {
    pointer_map *orig_acp = this->acp;
-   set *orig_kills = this->kills;
+   pointer_set *orig_kills = this->kills;
    bool orig_killed_all = this->killed_all;
 
    acp = _mesa_pointer_map_create(NULL);
-   kills = _mesa_set_create(NULL, _mesa_hash_pointer,
-                            _mesa_key_pointer_equal);
+   kills = _mesa_pointer_set_create(NULL);
    this->killed_all = false;
 
    /* Populate the initial acp with a copy of the original */
@@ -229,18 +225,18 @@ ir_copy_propagation_visitor::handle_if_block(exec_list *instructions)
       _mesa_pointer_map_clear(orig_acp);
    }
 
-   set *new_kills = this->kills;
+   pointer_set *new_kills = this->kills;
    this->kills = orig_kills;
    _mesa_pointer_map_destroy(acp, NULL);
    this->acp = orig_acp;
    this->killed_all = this->killed_all || orig_killed_all;
 
-   struct set_entry *s_entry;
-   set_foreach(new_kills, s_entry) {
-      kill((ir_variable *) s_entry->key);
+   struct pointer_set_entry *pse;
+   _mesa_pointer_set_foreach(new_kills, pse) {
+      kill((ir_variable *) pse->key);
    }
 
-   _mesa_set_destroy(new_kills, NULL);
+   _mesa_pointer_set_destroy(new_kills, NULL);
 }
 
 ir_visitor_status
@@ -259,12 +255,11 @@ void
 ir_copy_propagation_visitor::handle_loop(ir_loop *ir, bool keep_acp)
 {
    pointer_map *orig_acp = this->acp;
-   set *orig_kills = this->kills;
+   pointer_set *orig_kills = this->kills;
    bool orig_killed_all = this->killed_all;
 
    acp = _mesa_pointer_map_create(NULL);
-   kills = _mesa_set_create(NULL, _mesa_hash_pointer,
-                            _mesa_key_pointer_equal);
+   kills = _mesa_pointer_set_create(NULL);
    this->killed_all = false;
 
    if (keep_acp) {
@@ -280,18 +275,18 @@ ir_copy_propagation_visitor::handle_loop(ir_loop *ir, bool keep_acp)
       _mesa_pointer_map_clear(orig_acp);
    }
 
-   set *new_kills = this->kills;
+   pointer_set *new_kills = this->kills;
    this->kills = orig_kills;
    _mesa_pointer_map_destroy(acp, NULL);
    this->acp = orig_acp;
    this->killed_all = this->killed_all || orig_killed_all;
 
-   struct set_entry *entry;
-   set_foreach(new_kills, entry) {
-      kill((ir_variable *) entry->key);
+   struct pointer_set_entry *pse;
+   _mesa_pointer_set_foreach(new_kills, pse) {
+      kill((ir_variable *) pse->key);
    }
 
-   _mesa_set_destroy(new_kills, NULL);
+   _mesa_pointer_set_destroy(new_kills, NULL);
 }
 
 ir_visitor_status
@@ -329,7 +324,7 @@ ir_copy_propagation_visitor::kill(ir_variable *var)
    }
 
    /* Add the LHS variable to the set of killed variables in this block. */
-   _mesa_set_add(kills, var);
+   _mesa_pointer_set_insert(kills, var);
 }
 
 /**
