@@ -28,6 +28,7 @@
 #include "nir.h"
 #include "nir_builder.h"
 #include "nir_vla.h"
+#include "util/pointer_map.h"
 
 /*
  * This file implements an out-of-SSA pass as described in "Revisiting
@@ -39,7 +40,7 @@ struct from_ssa_state {
    nir_builder builder;
    void *dead_ctx;
    bool phi_webs_only;
-   struct hash_table *merge_node_table;
+   struct pointer_map *merge_node_map;
    nir_instr *instr;
    bool progress;
 };
@@ -120,8 +121,8 @@ merge_set_dump(merge_set *set, FILE *fp)
 static merge_node *
 get_merge_node(nir_ssa_def *def, struct from_ssa_state *state)
 {
-   struct hash_entry *entry =
-      _mesa_hash_table_search(state->merge_node_table, def);
+   struct map_entry *entry =
+      _mesa_pointer_map_search(state->merge_node_map, def);
    if (entry)
       return entry->data;
 
@@ -135,7 +136,7 @@ get_merge_node(nir_ssa_def *def, struct from_ssa_state *state)
    node->def = def;
    exec_list_push_head(&set->nodes, &node->node);
 
-   _mesa_hash_table_insert(state->merge_node_table, def, node);
+   _mesa_pointer_map_insert(state->merge_node_map, def, node);
 
    return node;
 }
@@ -467,8 +468,8 @@ rewrite_ssa_def(nir_ssa_def *def, void *void_state)
    struct from_ssa_state *state = void_state;
    nir_register *reg;
 
-   struct hash_entry *entry =
-      _mesa_hash_table_search(state->merge_node_table, def);
+   struct map_entry *entry =
+      _mesa_pointer_map_search(state->merge_node_map, def);
    if (entry) {
       /* In this case, we're part of a phi web.  Use the web's register. */
       merge_node *node = (merge_node *)entry->data;
@@ -765,8 +766,7 @@ nir_convert_from_ssa_impl(nir_function_impl *impl, bool phi_webs_only)
    nir_builder_init(&state.builder, impl);
    state.dead_ctx = ralloc_context(NULL);
    state.phi_webs_only = phi_webs_only;
-   state.merge_node_table = _mesa_hash_table_create(NULL, _mesa_hash_pointer,
-                                                    _mesa_key_pointer_equal);
+   state.merge_node_map = _mesa_pointer_map_create(NULL);
    state.progress = false;
 
    nir_foreach_block(block, impl) {
@@ -804,7 +804,7 @@ nir_convert_from_ssa_impl(nir_function_impl *impl, bool phi_webs_only)
                                nir_metadata_dominance);
 
    /* Clean up dead instructions and the hash tables */
-   _mesa_hash_table_destroy(state.merge_node_table, NULL);
+   _mesa_pointer_map_destroy(state.merge_node_map, NULL);
    ralloc_free(state.dead_ctx);
    return state.progress;
 }
