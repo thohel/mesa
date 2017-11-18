@@ -88,6 +88,19 @@ _mesa_pointer_map_next_entry(struct pointer_map *map,
         entry != NULL;                                  \
         entry = _mesa_pointer_map_next_entry(map, entry))
 
+static inline void
+_mesa_pointer_map_call_foreach(struct pointer_map *pm,
+                               void (*callback)(const void *key,
+                                                void *data,
+                                                void *closure),
+                               void *closure)
+{
+   struct map_entry *entry;
+
+   _mesa_pointer_map_foreach(pm, entry)
+      callback(entry->key, entry->data, closure);
+}
+
 #ifdef __cplusplus
 } /* extern C */
 #endif
