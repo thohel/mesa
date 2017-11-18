@@ -75,6 +75,7 @@
 #include "program/program.h"
 #include "util/mesa-sha1.h"
 #include "util/set.h"
+#include "util/pointer_map.h"
 #include "string_to_uint_map.h"
 #include "linker.h"
 #include "link_varyings.h"
@@ -1315,11 +1316,11 @@ populate_symbol_table(gl_linked_shader *sh, glsl_symbol_table *symbols)
  */
 static void
 remap_variables(ir_instruction *inst, struct gl_linked_shader *target,
-                hash_table *temps)
+                pointer_map *temps)
 {
    class remap_visitor : public ir_hierarchical_visitor {
    public:
-         remap_visitor(struct gl_linked_shader *target, hash_table *temps)
+         remap_visitor(struct gl_linked_shader *target, pointer_map *temps)
       {
          this->target = target;
          this->symbols = target->symbols;
@@ -1330,7 +1331,7 @@ remap_variables(ir_instruction *inst, struct gl_linked_shader *target,
       virtual ir_visitor_status visit(ir_dereference_variable *ir)
       {
          if (ir->var->data.mode == ir_var_temporary) {
-            hash_entry *entry = _mesa_hash_table_search(temps, ir->var);
+            map_entry *entry = _mesa_pointer_map_search(temps, ir->var);
             ir_variable *var = entry ? (ir_variable *) entry->data : NULL;
 
             assert(var != NULL);
@@ -1357,7 +1358,7 @@ remap_variables(ir_instruction *inst, struct gl_linked_shader *target,
       struct gl_linked_shader *target;
       glsl_symbol_table *symbols;
       exec_list *instructions;
-      hash_table *temps;
+      pointer_map *temps;
    };
 
    remap_visitor v(target, temps);
@@ -1391,11 +1392,10 @@ static exec_node *
 move_non_declarations(exec_list *instructions, exec_node *last,
                       bool make_copies, gl_linked_shader *target)
 {
-   hash_table *temps = NULL;
+   pointer_map *temps = NULL;
 
    if (make_copies)
-      temps = _mesa_hash_table_create(NULL, _mesa_hash_pointer,
-                                      _mesa_key_pointer_equal);
+      temps = _mesa_pointer_map_create(NULL);
 
    foreach_in_list_safe(ir_instruction, inst, instructions) {
       if (inst->as_function())
@@ -1414,7 +1414,7 @@ move_non_declarations(exec_list *instructions, exec_node *last,
          inst = inst->clone(target, NULL);
 
          if (var != NULL)
-            _mesa_hash_table_insert(temps, var, inst);
+            _mesa_pointer_map_insert(temps, var, inst);
          else
             remap_variables(inst, target, temps);
       } else {
@@ -1426,7 +1426,7 @@ move_non_declarations(exec_list *instructions, exec_node *last,
    }
 
    if (make_copies)
-      _mesa_hash_table_destroy(temps, NULL);
+      _mesa_pointer_map_destroy(temps, NULL);
 
    return last;
 }
@@ -1441,14 +1441,13 @@ class array_sizing_visitor : public deref_type_updater {
 public:
    array_sizing_visitor()
       : mem_ctx(ralloc_context(NULL)),
-        unnamed_interfaces(_mesa_hash_table_create(NULL, _mesa_hash_pointer,
-                                                   _mesa_key_pointer_equal))
+        unnamed_interfaces(_mesa_pointer_map_create(NULL))
    {
    }
 
    ~array_sizing_visitor()
    {
-      _mesa_hash_table_destroy(this->unnamed_interfaces, NULL);
+      _mesa_pointer_map_destroy(this->unnamed_interfaces, NULL);
       ralloc_free(this->mem_ctx);
    }
 
@@ -1483,17 +1482,17 @@ public:
          /* Store a pointer to the variable in the unnamed_interfaces
           * hashtable.
           */
-         hash_entry *entry =
-               _mesa_hash_table_search(this->unnamed_interfaces,
-                                       ifc_type);
+         map_entry *entry =
+               _mesa_pointer_map_search(this->unnamed_interfaces,
+                                        ifc_type);
 
          ir_variable **interface_vars = entry ? (ir_variable **) entry->data : NULL;
 
          if (interface_vars == NULL) {
             interface_vars = rzalloc_array(mem_ctx, ir_variable *,
                                            ifc_type->length);
-            _mesa_hash_table_insert(this->unnamed_interfaces, ifc_type,
-                                    interface_vars);
+            _mesa_pointer_map_insert(this->unnamed_interfaces, ifc_type,
+                                     interface_vars);
          }
          unsigned index = ifc_type->field_index(var->name);
          assert(index < ifc_type->length);
@@ -1511,8 +1510,8 @@ public:
     */
    void fixup_unnamed_interface_types()
    {
-      hash_table_call_foreach(this->unnamed_interfaces,
-                              fixup_unnamed_interface_type, NULL);
+      _mesa_pointer_map_call_foreach(this->unnamed_interfaces,
+                                     fixup_unnamed_interface_type, NULL);
    }
 
 private:
@@ -1640,7 +1639,7 @@ private:
     * Hash table from const glsl_type * to an array of ir_variable *'s
     * pointing to the ir_variables constituting each unnamed interface block.
     */
-   hash_table *unnamed_interfaces;
+   pointer_map *unnamed_interfaces;
 };
 
 static bool
@@ -2421,7 +2420,6 @@ link_intrastage_shaders(void *mem_ctx,
  *     array element index used, plus one. The compiler or linker
  *     determines the highest index used.  There will be only one
  *     active uniform reported by the GL per uniform array.
-
  */
 static void
 update_array_sizes(struct gl_shader_program *prog)
