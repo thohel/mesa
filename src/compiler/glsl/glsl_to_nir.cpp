@@ -32,6 +32,7 @@
 #include "compiler/nir/nir_control_flow.h"
 #include "compiler/nir/nir_builder.h"
 #include "main/imports.h"
+#include "util/pointer_map.h"
 
 /*
  * pass to lower GLSL IR to NIR
@@ -103,10 +104,10 @@ private:
    bool is_global;
 
    /* map of ir_variable -> nir_variable */
-   struct hash_table *var_table;
+   struct pointer_map *var_map;
 
    /* map of ir_function_signature -> nir_function_overload */
-   struct hash_table *overload_table;
+   struct pointer_map *overload_map;
 };
 
 /*
@@ -191,10 +192,8 @@ nir_visitor::nir_visitor(nir_shader *shader)
    this->supports_ints = shader->options->native_integers;
    this->shader = shader;
    this->is_global = true;
-   this->var_table = _mesa_hash_table_create(NULL, _mesa_hash_pointer,
-                                             _mesa_key_pointer_equal);
-   this->overload_table = _mesa_hash_table_create(NULL, _mesa_hash_pointer,
-                                                  _mesa_key_pointer_equal);
+   this->var_map = _mesa_pointer_map_create(NULL);
+   this->overload_map = _mesa_pointer_map_create(NULL);
    this->result = NULL;
    this->impl = NULL;
    this->var = NULL;
@@ -205,8 +204,8 @@ nir_visitor::nir_visitor(nir_shader *shader)
 
 nir_visitor::~nir_visitor()
 {
-   _mesa_hash_table_destroy(this->var_table, NULL);
-   _mesa_hash_table_destroy(this->overload_table, NULL);
+   _mesa_pointer_map_destroy(this->var_map, NULL);
+   _mesa_pointer_map_destroy(this->overload_map, NULL);
 }
 
 nir_deref_var *
@@ -467,7 +466,7 @@ nir_visitor::visit(ir_variable *ir)
    else
       nir_shader_add_variable(shader, var);
 
-   _mesa_hash_table_insert(var_table, ir, var);
+   _mesa_pointer_map_insert(var_map, ir, var);
    this->var = var;
 }
 
@@ -491,7 +490,7 @@ nir_visitor::create_function(ir_function_signature *ir)
    assert(ir->parameters.is_empty());
    assert(ir->return_type == glsl_type::void_type);
 
-   _mesa_hash_table_insert(this->overload_table, ir, func);
+   _mesa_pointer_map_insert(this->overload_map, ir, func);
 }
 
 void
@@ -507,8 +506,8 @@ nir_visitor::visit(ir_function_signature *ir)
    if (ir->is_intrinsic())
       return;
 
-   struct hash_entry *entry =
-      _mesa_hash_table_search(this->overload_table, ir);
+   struct map_entry *entry =
+      _mesa_pointer_map_search(this->overload_map, ir);
 
    assert(entry);
    nir_function *func = (nir_function *) entry->data;
@@ -1231,8 +1230,8 @@ nir_visitor::visit(ir_call *ir)
       return;
    }
 
-   struct hash_entry *entry =
-      _mesa_hash_table_search(this->overload_table, ir->callee);
+   struct map_entry *entry =
+      _mesa_pointer_map_search(this->overload_map, ir->callee);
    assert(entry);
    nir_function *callee = (nir_function *) entry->data;
 
@@ -2174,8 +2173,8 @@ nir_visitor::visit(ir_constant *ir)
 void
 nir_visitor::visit(ir_dereference_variable *ir)
 {
-   struct hash_entry *entry =
-      _mesa_hash_table_search(this->var_table, ir->var);
+   struct map_entry *entry =
+      _mesa_pointer_map_search(this->var_map, ir->var);
    assert(entry);
    nir_variable *var = (nir_variable *) entry->data;
 
