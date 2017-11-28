@@ -42,7 +42,6 @@ struct map_entry {
 
 struct pointer_map {
    struct map_entry *map;
-   uint8_t *metadata;
 
    const void *deleted_key;
 

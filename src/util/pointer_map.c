@@ -39,28 +39,25 @@
 #include "ralloc.h"
 #include "macros.h"
 
-static inline uint8_t
-get_hash(uint8_t *metadata)
+static const uint32_t deleted_key_value;
+static const void *deleted_key = &deleted_key_value;
+
+static bool
+entry_is_free(const struct map_entry *entry)
 {
-   return *metadata & 0x7F;
+   return entry->key == NULL;
 }
 
-static inline void
-set_hash(uint8_t *metadata, uint32_t hash)
+static bool
+entry_is_deleted(const struct pointer_map *pm, struct map_entry *entry)
 {
-   *metadata = (*metadata & ~0x7F) | (((uint8_t) hash) & 0x7F);
+   return entry->key == pm->deleted_key;
 }
 
-static inline bool
-entry_is_free(uint8_t *metadata)
+static bool
+entry_is_present(const struct pointer_map *pm, struct map_entry *entry)
 {
-   return !(*metadata >> 7);
-}
-
-static inline void
-set_occupied(uint8_t *metadata, bool occupied)
-{
-   *metadata = occupied ? *metadata | 0x80 : *metadata & 0x7F;
+   return entry->key != NULL && entry->key != pm->deleted_key;
 }
 
 static inline uint32_t
@@ -68,15 +65,6 @@ hash_pointer(const void *pointer)
 {
    uintptr_t num = (uintptr_t) pointer;
    return (uint32_t) ((num >> 2) ^ (num >> 6) ^ (num >> 10) ^ (num >> 14));
-}
-
-static bool
-entry_is_deleted(struct pointer_map *map, uint8_t *metadata)
-{
-   if (get_hash(metadata) != 0)
-      return false;
-
-   return map->map[metadata - map->metadata].key == NULL;
 }
 
 struct pointer_map *
@@ -91,9 +79,9 @@ _mesa_pointer_map_create(void *mem_ctx)
    map->size = 1 << 4;
    map->max_entries = map->size * 0.6;
    map->map = rzalloc_array(map, struct map_entry, map->size);
-   map->metadata = rzalloc_array(map, uint8_t, map->size);
    map->entries = 0;
    map->deleted_entries = 0;
+   map->deleted_key = deleted_key;
 
    if (map->map == NULL) {
       ralloc_free(map);
@@ -131,7 +119,6 @@ _mesa_pointer_map_destroy(struct pointer_map *map,
 void
 _mesa_pointer_map_clear(struct pointer_map *map)
 {
-   memset(map->metadata, 0, map->size * sizeof(uint8_t));
    memset(map->map, 0, sizeof(struct map_entry) * map->size);
    map->entries = 0;
    map->deleted_entries = 0;
@@ -150,15 +137,14 @@ _mesa_pointer_map_search(struct pointer_map *map, const void *key)
    uint32_t start_hash_address = hash & (map->size - 1);
    uint32_t hash_address = start_hash_address;
 
+   struct map_entry *entry = NULL;
    do {
-      uint8_t *metadata = map->metadata + hash_address;
+      entry = map->map + hash_address;
 
-      if (entry_is_free(metadata)) {
+      if (entry_is_free(entry)) {
          return NULL;
-      } else if (get_hash(metadata) == (hash & 0x7F)) {
-         if (map->map[hash_address].key == key) {
-            return &map->map[hash_address];
-         }
+      } else if (entry->key == key) {
+         return entry;
       }
 
       hash_address = (hash_address + 1) & (map->size - 1);
@@ -172,7 +158,6 @@ _mesa_pointer_map_rehash(struct pointer_map *map, unsigned new_size)
 {
    struct pointer_map old_map;
    struct map_entry *map_entries, *entry;
-   uint8_t *metadatas;
 
    old_map = *map;
 
@@ -183,12 +168,7 @@ _mesa_pointer_map_rehash(struct pointer_map *map, unsigned new_size)
    if (map_entries == NULL)
       return;
 
-   metadatas = rzalloc_array(map, uint8_t, map->size);
-   if (metadatas == NULL)
-      return;
-
    map->map = map_entries;
-   map->metadata = metadatas;
    map->entries = 0;
    map->deleted_entries = 0;
 
@@ -197,7 +177,6 @@ _mesa_pointer_map_rehash(struct pointer_map *map, unsigned new_size)
    }
 
    ralloc_free(old_map.map);
-   ralloc_free(old_map.metadata);
 }
 
 /**
@@ -209,7 +188,7 @@ struct map_entry *
 _mesa_pointer_map_insert(struct pointer_map *map, const void *key, void *data)
 {
    uint32_t start_hash_address, hash_address, hash;
-   uint8_t *available_entry = NULL;
+   struct map_entry *available_entry = NULL;
    assert(key != NULL);
 
    if (map->entries >= map->max_entries) {
@@ -222,16 +201,17 @@ _mesa_pointer_map_insert(struct pointer_map *map, const void *key, void *data)
    start_hash_address = hash & (map->size - 1);
    hash_address = start_hash_address;
 
-   do {
-      uint8_t *entry = map->metadata + hash_address;
+   struct map_entry *entry = NULL;
 
-      if (entry_is_free(entry)) {
-         /* If we have not found a deleted entry yet, then we want
-          * to take the free slot at the end of the group
-          */
+   do {
+      entry = map->map + hash_address;
+
+      if (!entry_is_present(map, entry)) {
+         /* Stash the first available entry we find */
          if (available_entry == NULL)
             available_entry = entry;
-         break;
+         if (entry_is_free(entry))
+            break;
       }
 
       /* Implement replacement when another insert happens
@@ -245,18 +225,9 @@ _mesa_pointer_map_insert(struct pointer_map *map, const void *key, void *data)
        * required to avoid memory leaks, perform a search
        * before inserting.
        */
-      if (get_hash(entry) == (hash & 0x7F) &&
-          map->map[hash_address].key == key) {
-         set_hash(entry, hash);
-         map->map[hash_address].data = data;
-         set_occupied(entry, true);
-         return &map->map[hash_address];
-      }
-
-      // Stash the first deleted entry in the group
-      if (entry_is_deleted(map, entry) &&
-          available_entry == NULL) {
-            available_entry = entry;
+      if (!entry_is_deleted(map, entry) && key == entry->key) {
+         entry->data = data;
+         return entry;
       }
 
       hash_address = (hash_address + 1) & (map->size - 1);
@@ -265,12 +236,10 @@ _mesa_pointer_map_insert(struct pointer_map *map, const void *key, void *data)
    if (available_entry) {
       if (entry_is_deleted(map, available_entry))
          map->deleted_entries--;
-      set_hash(available_entry, hash);
-      set_occupied(available_entry, true);
-      map->map[hash_address].key = key;
-      map->map[hash_address].data = data;
+      available_entry->key = key;
+      available_entry->data = data;
       map->entries++;
-      return &map->map[hash_address];
+      return available_entry;
    }
 
    /* We could hit here if a required resize failed. An unchecked-malloc
@@ -293,7 +262,7 @@ _mesa_pointer_map_remove(struct pointer_map *map,
       return;
 
    entry->key = NULL;
-   set_hash(map->metadata + (entry - map->map), 0);
+   entry->key = map->deleted_key;
    map->entries--;
    map->deleted_entries++;
 }
