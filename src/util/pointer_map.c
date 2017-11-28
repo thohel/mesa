@@ -132,6 +132,7 @@ void
 _mesa_pointer_map_clear(struct pointer_map *map)
 {
    memset(map->metadata, 0, map->size * sizeof(uint8_t));
+   memset(map->map, 0, sizeof(struct map_entry) * map->size);
    map->entries = 0;
    map->deleted_entries = 0;
 }
