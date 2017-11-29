@@ -30,31 +30,45 @@
 /* SSA-based mark-and-sweep dead code elimination */
 
 typedef struct {
+   struct exec_list *worklist;
+   struct exec_list *free_nodes;
+} worklist;
+
+typedef struct {
    struct exec_node node;
    nir_instr *instr;
 } worklist_elem;
 
 static void
-worklist_push(struct exec_list *worklist, nir_instr *instr)
+worklist_push(worklist *worklist, nir_instr *instr)
 {
-   worklist_elem *elem = ralloc(worklist, worklist_elem);
+   if (exec_list_is_empty(worklist->free_nodes)) {
+      worklist_elem *elements = ralloc_array(worklist, worklist_elem, 20);
+      for (int i = 0; i < 20; i++)
+         exec_list_push_tail(worklist->free_nodes, &elements[i].node);
+   }
+
+   struct exec_node *node = exec_list_pop_head(worklist->free_nodes);
+   worklist_elem *elem = exec_node_data(worklist_elem, node, node);
    elem->instr = instr;
    instr->pass_flags = 1;
-   exec_list_push_tail(worklist, &elem->node);
+   exec_list_push_tail(worklist->worklist, &elem->node);
 }
 
 static nir_instr *
-worklist_pop(struct exec_list *worklist)
+worklist_pop(worklist *worklist)
 {
-   struct exec_node *node = exec_list_pop_head(worklist);
+   
+   struct exec_node *node = exec_list_pop_head(worklist->worklist);
    worklist_elem *elem = exec_node_data(worklist_elem, node, node);
+   exec_list_push_head(worklist->free_nodes, node);
    return elem->instr;
 }
 
 static bool
 mark_live_cb(nir_src *src, void *_state)
 {
-   struct exec_list *worklist = (struct exec_list *) _state;
+   worklist *worklist = _state;
 
    if (src->is_ssa && !src->ssa->parent_instr->pass_flags) {
       worklist_push(worklist, src->ssa->parent_instr);
@@ -64,7 +78,7 @@ mark_live_cb(nir_src *src, void *_state)
 }
 
 static void
-init_instr(nir_instr *instr, struct exec_list *worklist)
+init_instr(nir_instr *instr, worklist *worklist)
 {
    nir_alu_instr *alu_instr;
    nir_intrinsic_instr *intrin_instr;
@@ -113,7 +127,7 @@ init_instr(nir_instr *instr, struct exec_list *worklist)
 }
 
 static bool
-init_block(nir_block *block, struct exec_list *worklist)
+init_block(nir_block *block, worklist *worklist)
 {
    nir_foreach_instr(instr, block)
       init_instr(instr, worklist);
@@ -131,19 +145,22 @@ init_block(nir_block *block, struct exec_list *worklist)
 static bool
 nir_opt_dce_impl(nir_function_impl *impl)
 {
-   struct exec_list *worklist = rzalloc(NULL, struct exec_list);
-   exec_list_make_empty(worklist);
+   worklist *wl = ralloc(NULL, worklist);
+   wl->free_nodes = ralloc(wl, struct exec_list);
+   wl->worklist = ralloc(wl, struct exec_list);
+   exec_list_make_empty(wl->free_nodes);
+   exec_list_make_empty(wl->worklist);
 
    nir_foreach_block(block, impl) {
-      init_block(block, worklist);
+      init_block(block, wl);
    }
 
-   while (!exec_list_is_empty(worklist)) {
-      nir_instr *instr = worklist_pop(worklist);
-      nir_foreach_src(instr, mark_live_cb, worklist);
+   while (!exec_list_is_empty(wl->worklist)) {
+      nir_instr *instr = worklist_pop(wl);
+      nir_foreach_src(instr, mark_live_cb, wl);
    }
 
-   ralloc_free(worklist);
+   ralloc_free(wl);
 
    bool progress = false;
 
