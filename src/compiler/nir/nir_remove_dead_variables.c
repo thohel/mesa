@@ -26,16 +26,17 @@
  */
 
 #include "nir.h"
+#include "util/pointer_set.h"
 
 static void
-add_var_use_intrinsic(nir_intrinsic_instr *instr, struct set *live,
+add_var_use_intrinsic(nir_intrinsic_instr *instr, struct pointer_set *live,
                       nir_variable_mode modes)
 {
    unsigned num_vars = nir_intrinsic_infos[instr->intrinsic].num_variables;
 
    switch (instr->intrinsic) {
    case nir_intrinsic_copy_var:
-      _mesa_set_add(live, instr->variables[1]->var);
+      _mesa_pointer_set_insert(live, instr->variables[1]->var);
       /* Fall through */
    case nir_intrinsic_store_var: {
       /* The first source in both copy_var and store_var is the destination.
@@ -44,7 +45,7 @@ add_var_use_intrinsic(nir_intrinsic_instr *instr, struct set *live,
        */
       nir_variable_mode mode = instr->variables[0]->var->data.mode;
       if (!(mode & (nir_var_local | nir_var_global | nir_var_shared)))
-         _mesa_set_add(live, instr->variables[0]->var);
+         _mesa_pointer_set_insert(live, instr->variables[0]->var);
       break;
    }
 
@@ -58,42 +59,42 @@ add_var_use_intrinsic(nir_intrinsic_instr *instr, struct set *live,
 
    default:
       for (unsigned i = 0; i < num_vars; i++) {
-         _mesa_set_add(live, instr->variables[i]->var);
+         _mesa_pointer_set_insert(live, instr->variables[i]->var);
       }
       break;
    }
 }
 
 static void
-add_var_use_call(nir_call_instr *instr, struct set *live)
+add_var_use_call(nir_call_instr *instr, struct pointer_set *live)
 {
    if (instr->return_deref != NULL) {
       nir_variable *var = instr->return_deref->var;
-      _mesa_set_add(live, var);
+      _mesa_pointer_set_insert(live, var);
    }
 
    for (unsigned i = 0; i < instr->num_params; i++) {
       nir_variable *var = instr->params[i]->var;
-      _mesa_set_add(live, var);
+      _mesa_pointer_set_insert(live, var);
    }
 }
 
 static void
-add_var_use_tex(nir_tex_instr *instr, struct set *live)
+add_var_use_tex(nir_tex_instr *instr, struct pointer_set *live)
 {
    if (instr->texture != NULL) {
       nir_variable *var = instr->texture->var;
-      _mesa_set_add(live, var);
+      _mesa_pointer_set_insert(live, var);
    }
 
    if (instr->sampler != NULL) {
       nir_variable *var = instr->sampler->var;
-      _mesa_set_add(live, var);
+      _mesa_pointer_set_insert(live, var);
    }
 }
 
 static void
-add_var_use_shader(nir_shader *shader, struct set *live, nir_variable_mode modes)
+add_var_use_shader(nir_shader *shader, struct pointer_set *live, nir_variable_mode modes)
 {
    nir_foreach_function(function, shader) {
       if (function->impl) {
@@ -123,7 +124,7 @@ add_var_use_shader(nir_shader *shader, struct set *live, nir_variable_mode modes
 }
 
 static void
-remove_dead_var_writes(nir_shader *shader, struct set *live)
+remove_dead_var_writes(nir_shader *shader)
 {
    nir_foreach_function(function, shader) {
       if (!function->impl)
@@ -148,12 +149,12 @@ remove_dead_var_writes(nir_shader *shader, struct set *live)
 }
 
 static bool
-remove_dead_vars(struct exec_list *var_list, struct set *live)
+remove_dead_vars(struct exec_list *var_list, struct pointer_set *live)
 {
    bool progress = false;
 
    foreach_list_typed_safe(nir_variable, var, node, var_list) {
-      struct set_entry *entry = _mesa_set_search(live, var);
+      struct pointer_set_entry *entry = _mesa_pointer_set_search(live, var);
       if (entry == NULL) {
          /* Mark this variable as used by setting the mode to 0 */
          var->data.mode = 0;
@@ -169,8 +170,8 @@ bool
 nir_remove_dead_variables(nir_shader *shader, nir_variable_mode modes)
 {
    bool progress = false;
-   struct set *live =
-      _mesa_set_create(NULL, _mesa_hash_pointer, _mesa_key_pointer_equal);
+   struct pointer_set *live =
+      _mesa_pointer_set_create(NULL);
 
    add_var_use_shader(shader, live, modes);
 
@@ -202,7 +203,7 @@ nir_remove_dead_variables(nir_shader *shader, nir_variable_mode modes)
    }
 
    if (progress) {
-      remove_dead_var_writes(shader, live);
+      remove_dead_var_writes(shader);
 
       nir_foreach_function(function, shader) {
          if (function->impl) {
@@ -212,6 +213,6 @@ nir_remove_dead_variables(nir_shader *shader, nir_variable_mode modes)
       }
    }
 
-   _mesa_set_destroy(live, NULL);
+   _mesa_pointer_set_destroy(live, NULL);
    return progress;
 }
