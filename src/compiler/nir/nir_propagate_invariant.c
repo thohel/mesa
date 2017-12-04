@@ -22,14 +22,15 @@
  */
 
 #include "nir.h"
+#include "util/pointer_set.h"
 
 static void
-add_src(nir_src *src, struct set *invariants)
+add_src(nir_src *src, struct pointer_set *invariants)
 {
    if (src->is_ssa) {
-      _mesa_set_add(invariants, src->ssa);
+      _mesa_pointer_set_insert(invariants, src->ssa);
    } else {
-      _mesa_set_add(invariants, src->reg.reg);
+      _mesa_pointer_set_insert(invariants, src->reg.reg);
    }
 }
 
@@ -41,17 +42,17 @@ add_src_cb(nir_src *src, void *state)
 }
 
 static bool
-dest_is_invariant(nir_dest *dest, struct set *invariants)
+dest_is_invariant(nir_dest *dest, struct pointer_set *invariants)
 {
    if (dest->is_ssa) {
-      return _mesa_set_search(invariants, &dest->ssa);
+      return _mesa_pointer_set_search(invariants, &dest->ssa);
    } else {
-      return _mesa_set_search(invariants, dest->reg.reg);
+      return _mesa_pointer_set_search(invariants, dest->reg.reg);
    }
 }
 
 static void
-add_cf_node(nir_cf_node *cf, struct set *invariants)
+add_cf_node(nir_cf_node *cf, struct pointer_set *invariants)
 {
    if (cf->type == nir_cf_node_if) {
       nir_if *if_stmt = nir_cf_node_as_if(cf);
@@ -63,19 +64,19 @@ add_cf_node(nir_cf_node *cf, struct set *invariants)
 }
 
 static void
-add_var(nir_variable *var, struct set *invariants)
+add_var(nir_variable *var, struct pointer_set *invariants)
 {
-   _mesa_set_add(invariants, var);
+   _mesa_pointer_set_insert(invariants, var);
 }
 
 static bool
-var_is_invariant(nir_variable *var, struct set * invariants)
+var_is_invariant(nir_variable *var, struct pointer_set *invariants)
 {
-   return var->data.invariant || _mesa_set_search(invariants, var);
+   return var->data.invariant || _mesa_pointer_set_search(invariants, var);
 }
 
 static void
-propagate_invariant_instr(nir_instr *instr, struct set *invariants)
+propagate_invariant_instr(nir_instr *instr, struct pointer_set *invariants)
 {
    switch (instr->type) {
    case nir_instr_type_alu: {
@@ -147,7 +148,8 @@ propagate_invariant_instr(nir_instr *instr, struct set *invariants)
 }
 
 static bool
-propagate_invariant_impl(nir_function_impl *impl, struct set *invariants)
+propagate_invariant_impl(nir_function_impl *impl,
+                         struct pointer_set *invariants)
 {
    bool progress = false;
 
@@ -181,8 +183,7 @@ bool
 nir_propagate_invariant(nir_shader *shader)
 {
    /* Hash set of invariant things */
-   struct set *invariants = _mesa_set_create(NULL, _mesa_hash_pointer,
-                                             _mesa_key_pointer_equal);
+   struct pointer_set *invariants = _mesa_pointer_set_create(NULL);
 
    bool progress = false;
    nir_foreach_function(function, shader) {
@@ -190,7 +191,7 @@ nir_propagate_invariant(nir_shader *shader)
          progress = true;
    }
 
-   _mesa_set_destroy(invariants, NULL);
+   _mesa_pointer_set_destroy(invariants, NULL);
 
    return progress;
 }
